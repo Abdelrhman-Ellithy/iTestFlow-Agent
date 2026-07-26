@@ -17,7 +17,7 @@ import { embedWithLocalModel, type LocalEmbeddingDtype } from "./local-embedding
  * - EMBEDDINGS_API_KEY:  required for gemini, and for openai unless a base URL
  *                        override (local server) is set
  * - EMBEDDINGS_LOCAL_DTYPE: local only — ONNX weight precision, default "q8"
- *                        (quantized ~70MB download); "fp32" for full precision
+ *                        (quantized, ~131 MB download); "fp32" for full precision
  *
  * "local" is the zero-setup default: nomic-embed-text runs in-process via
  * transformers.js/ONNX, auto-downloading the model on first use — nothing to
@@ -68,6 +68,20 @@ const EMBEDDING_DEFAULT_BASE_URLS: Record<Exclude<EmbeddingProviderName, "local"
 const LOCAL_DTYPES: LocalEmbeddingDtype[] = ["q8", "fp16", "fp32", "q4"];
 const DEFAULT_LOCAL_DTYPE: LocalEmbeddingDtype = "q8";
 
+/** Selectable values for the Settings UI and its API validation. */
+export const EMBEDDING_PROVIDER_OPTIONS = ["off", "local", "ollama", "openai", "gemini"] as const;
+export const EMBEDDING_LOCAL_DTYPE_OPTIONS: readonly LocalEmbeddingDtype[] = LOCAL_DTYPES;
+/** Zero-setup default: nomic-embed-text runs in-process, no server and no key. */
+export const EMBEDDING_DEFAULT_PROVIDER = "local" as const;
+export { DEFAULT_LOCAL_DTYPE as EMBEDDING_DEFAULT_LOCAL_DTYPE };
+/** Approximate on-disk size of the auto-downloaded local weights, per dtype. */
+export const EMBEDDING_LOCAL_DTYPE_SIZES: Record<LocalEmbeddingDtype, string> = {
+  q8: "~131 MB",
+  q4: "~80 MB",
+  fp16: "~262 MB",
+  fp32: "~522 MB",
+};
+
 // Nomic embedding models require task-specific prefixes for retrieval quality; other
 // model families ignore prefixes entirely, so this applies only when the model name
 // identifies the nomic family.
@@ -86,22 +100,43 @@ export const MAX_EMBED_BATCH_SIZE = 64;
 const MAX_EMBED_INPUT_CHARS = 8000;
 const EMBED_RETRY_ATTEMPTS = 2;
 
-export function getEmbeddingConfigFromEnv(env: Record<string, string | undefined> = process.env): EmbeddingConfig {
-  const raw = env.EMBEDDINGS_PROVIDER?.trim().toLowerCase();
+/**
+ * Normalizes raw (env or database) embedding settings into a validated config.
+ * Shared by the env reader and the per-workspace resolver so a stored override
+ * and an environment variable are validated identically.
+ */
+export function normalizeEmbeddingConfig(raw: {
+  provider?: string | null;
+  model?: string | null;
+  baseUrl?: string | null;
+  apiKey?: string | null;
+  localDtype?: string | null;
+}): EmbeddingConfig {
+  const rawProvider = raw.provider?.trim().toLowerCase();
   // Unset/empty gets the zero-setup default; an explicit but unrecognized value is
   // treated as a misconfiguration and falls back to "off" instead.
-  const provider = raw || "local";
+  const provider = rawProvider || "local";
   if (provider !== "local" && provider !== "ollama" && provider !== "openai" && provider !== "gemini") {
     return { provider: "off" };
   }
-  const rawDtype = env.EMBEDDINGS_LOCAL_DTYPE?.trim().toLowerCase();
+  const rawDtype = raw.localDtype?.trim().toLowerCase();
   return {
     provider,
-    model: env.EMBEDDINGS_MODEL?.trim() || undefined,
-    baseUrl: env.EMBEDDINGS_BASE_URL?.trim() || undefined,
-    apiKey: env.EMBEDDINGS_API_KEY?.trim() || undefined,
+    model: raw.model?.trim() || undefined,
+    baseUrl: raw.baseUrl?.trim() || undefined,
+    apiKey: raw.apiKey?.trim() || undefined,
     localDtype: LOCAL_DTYPES.find((dtype) => dtype === rawDtype),
   };
+}
+
+export function getEmbeddingConfigFromEnv(env: Record<string, string | undefined> = process.env): EmbeddingConfig {
+  return normalizeEmbeddingConfig({
+    provider: env.EMBEDDINGS_PROVIDER,
+    model: env.EMBEDDINGS_MODEL,
+    baseUrl: env.EMBEDDINGS_BASE_URL,
+    apiKey: env.EMBEDDINGS_API_KEY,
+    localDtype: env.EMBEDDINGS_LOCAL_DTYPE,
+  });
 }
 
 /**

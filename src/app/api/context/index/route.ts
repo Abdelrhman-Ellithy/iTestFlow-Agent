@@ -23,6 +23,7 @@ const RequestSchema = z.object({
   workItemTypes: z.array(z.string().min(1)).min(1),
   states: z.array(z.string().min(1)).min(1),
   mode: z.enum(["incremental", "rebuild"]).optional(),
+  limit: z.number().int().min(1).max(5000).optional(),
 });
 
 export async function POST(request: Request) {
@@ -53,6 +54,7 @@ export async function POST(request: Request) {
       workItemTypes: parsed.data.workItemTypes,
       states: parsed.data.states,
       mode: parsed.data.mode ?? "incremental",
+      limit: parsed.data.limit,
     });
     completeWorkflowRun({
       scope: trustedScope,

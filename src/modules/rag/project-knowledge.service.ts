@@ -833,17 +833,23 @@ function selectProjectKnowledgeWorkItemsFromSnapshotTimestamp(input: {
   workItems: ProjectKnowledgeWorkItem[];
 }): ProjectKnowledgeWorkItemSelection {
   const extractedAtMs = Date.parse(input.existingSnapshot.extractedAt);
-  const changedSourceWorkItemIds = Number.isFinite(extractedAtMs)
-    ? input.workItems
-        .filter((item) => {
-          const updatedAtMs = Date.parse(item.updatedDate ?? "");
-          return Number.isFinite(updatedAtMs) && updatedAtMs > extractedAtMs;
-        })
-        .map((item) => item.id)
-    : [];
+  const knownSourceWorkItemIds = new Set(getKnowledgeSourceWorkItemIds(input.existingSnapshot.knowledgeBase));
+  const changedSourceWorkItemIds = input.workItems
+    .filter((item) => {
+      // Never cited as a source in the existing knowledge base -- always changed,
+      // regardless of its Azure DevOps updatedDate. Otherwise a work item that's
+      // simply old and untouched but newly in scope (e.g. after widening a fetch
+      // limit or filter) would look "unchanged" purely because its updatedDate
+      // predates the last extraction, even though it has never actually been
+      // compiled into knowledge at all.
+      if (!knownSourceWorkItemIds.has(item.id)) return true;
+      if (!Number.isFinite(extractedAtMs)) return false;
+      const updatedAtMs = Date.parse(item.updatedDate ?? "");
+      return Number.isFinite(updatedAtMs) && updatedAtMs > extractedAtMs;
+    })
+    .map((item) => item.id);
   const activeSourceIds = new Set(input.workItems.map((item) => item.id));
-  const retiredSourceWorkItemIds = getKnowledgeSourceWorkItemIds(input.existingSnapshot.knowledgeBase)
-    .filter((sourceId) => !activeSourceIds.has(sourceId));
+  const retiredSourceWorkItemIds = Array.from(knownSourceWorkItemIds).filter((sourceId) => !activeSourceIds.has(sourceId));
   const affectedSourceWorkItemIds = Array.from(new Set([...changedSourceWorkItemIds, ...retiredSourceWorkItemIds]));
 
   return {

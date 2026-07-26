@@ -8,7 +8,8 @@ import type { Requirement } from "@/modules/integrations/azure-devops/azure-devo
 import { chunkText } from "./rag-pipeline.service";
 import { ensureProjectContextSearchIndex, refreshProjectContextSearchIndex } from "./context-chatbot-retrieval.service";
 import { buildFtsQueryWithDynamicSynonyms } from "./full-text-search";
-import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
+import { type EmbeddingProvider } from "./embedding-provider";
+import { createWorkspaceEmbeddingProvider } from "./embedding-settings.service";
 import { syncProjectChunkEmbeddings } from "./embedding-store.service";
 import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
@@ -169,6 +170,8 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
   workItemTypes: string[];
   states: string[];
   mode?: "incremental" | "rebuild";
+  /** How many matching work items to fetch, most-recently-changed first. Defaults to 200 (the adapter's own default) when unset. */
+  limit?: number;
 }) {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
@@ -177,6 +180,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
 
   const workItems = await input.adapter.fetchWorkItems({
     projectId: scope.azureProjectId,
+    limit: input.limit,
     workItemTypes: input.workItemTypes,
     states: input.states,
   });
@@ -442,7 +446,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
   // double-click racing a scheduled sync — the manual route has no job-queue dedup)
   // redundantly re-embedding the same content; a lock miss just skips this call's
   // embedding sync rather than duplicating the work.
-  const embeddingProvider = createEmbeddingProvider();
+  const embeddingProvider = await createWorkspaceEmbeddingProvider(scope.workspaceId);
   let embeddingSummary: { embeddedChunkCount: number; removedEmbeddingCount: number } | undefined;
   if (embeddingProvider) {
     try {
@@ -686,7 +690,9 @@ export async function retrieveStoredProjectContext(input: {
   // resolution (see buildFtsQueryWithDynamicSynonyms) and for semantic search below,
   // instead of letting searchProjectChunksHybrid re-resolve it independently.
   const embeddingProvider =
-    input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
+    input.embeddingProvider !== undefined
+      ? input.embeddingProvider
+      : await createWorkspaceEmbeddingProvider(scope.workspaceId);
   const ftsQuery = await buildFtsQueryWithDynamicSynonyms(input.query, embeddingProvider);
   if (!ftsQuery) return [];
   await ensureProjectContextSearchIndex({ scope });

@@ -4,6 +4,8 @@ import { describeDb } from "@/test/db";
 import { resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
 import {
+  EMPTY_WORKSPACE_EMBEDDINGS_VIEW,
+  getWorkspaceEmbeddingsConfig,
   getWorkspaceSettings,
   upsertWorkspaceSettings,
 } from "@/modules/workspace/workspace-settings.service";
@@ -68,6 +70,7 @@ describeDb("workspace settings (DB-backed)", () => {
       llmRetryAttempts: null,
       manualBaselineMinutes: null,
       reviewBaselineMinutes: null,
+      embeddings: EMPTY_WORKSPACE_EMBEDDINGS_VIEW,
     });
     expect(await getRetrievalTopK(workspaceId)).toBe(12);
   });
@@ -85,6 +88,7 @@ describeDb("workspace settings (DB-backed)", () => {
       llmRetryAttempts: null,
       manualBaselineMinutes: null,
       reviewBaselineMinutes: null,
+      embeddings: EMPTY_WORKSPACE_EMBEDDINGS_VIEW,
     });
     process.env.PROJECT_CONTEXT_TOP_K = "20";
     expect(await getRetrievalTopK(workspaceId)).toBe(20);
@@ -99,6 +103,7 @@ describeDb("workspace settings (DB-backed)", () => {
       llmRetryAttempts: null,
       manualBaselineMinutes: null,
       reviewBaselineMinutes: null,
+      embeddings: EMPTY_WORKSPACE_EMBEDDINGS_VIEW,
     });
   });
 
@@ -112,6 +117,7 @@ describeDb("workspace settings (DB-backed)", () => {
       llmRetryAttempts: null,
       manualBaselineMinutes: null,
       reviewBaselineMinutes: null,
+      embeddings: EMPTY_WORKSPACE_EMBEDDINGS_VIEW,
     });
     // Update only top-K — the cap is preserved.
     await upsertWorkspaceSettings({ workspaceId, retrievalTopK: 8, updatedByUserId: null });
@@ -121,6 +127,7 @@ describeDb("workspace settings (DB-backed)", () => {
       llmRetryAttempts: null,
       manualBaselineMinutes: null,
       reviewBaselineMinutes: null,
+      embeddings: EMPTY_WORKSPACE_EMBEDDINGS_VIEW,
     });
     // An explicit null still clears (inherit) — distinct from "omitted".
     await upsertWorkspaceSettings({ workspaceId, retrievalTopK: null, updatedByUserId: null });
@@ -130,6 +137,78 @@ describeDb("workspace settings (DB-backed)", () => {
       llmRetryAttempts: null,
       manualBaselineMinutes: null,
       reviewBaselineMinutes: null,
+      embeddings: EMPTY_WORKSPACE_EMBEDDINGS_VIEW,
     });
+  });
+
+  it("round-trips embeddings settings and never exposes the api key in the view", async () => {
+    process.env.APP_ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString("base64");
+    await upsertWorkspaceSettings({
+      workspaceId,
+      embeddings: {
+        provider: "openai",
+        model: "text-embedding-3-large",
+        baseUrl: "https://example.test/v1",
+        apiKey: "sk-embeddings-secret",
+      },
+      updatedByUserId: null,
+    });
+
+    const view = await getWorkspaceSettings(workspaceId);
+    expect(view?.embeddings).toEqual({
+      provider: "openai",
+      model: "text-embedding-3-large",
+      baseUrl: "https://example.test/v1",
+      localDtype: null,
+      hasApiKey: true,
+    });
+    // The plaintext key must never reach the view that the API serializes.
+    expect(JSON.stringify(view)).not.toContain("sk-embeddings-secret");
+    // ...but the server-only resolver decrypts it for the embedding provider.
+    expect((await getWorkspaceEmbeddingsConfig(workspaceId))?.apiKey).toBe("sk-embeddings-secret");
+  });
+
+  it("keeps the stored embeddings key when omitted and clears it when explicitly null", async () => {
+    process.env.APP_ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString("base64");
+    await upsertWorkspaceSettings({
+      workspaceId,
+      embeddings: { provider: "gemini", apiKey: "sk-keep-me" },
+      updatedByUserId: null,
+    });
+
+    // Saving other embedding fields without an apiKey must not wipe the key.
+    await upsertWorkspaceSettings({
+      workspaceId,
+      embeddings: { model: "gemini-embedding-001" },
+      updatedByUserId: null,
+    });
+    expect((await getWorkspaceSettings(workspaceId))?.embeddings).toMatchObject({
+      provider: "gemini",
+      model: "gemini-embedding-001",
+      hasApiKey: true,
+    });
+    expect((await getWorkspaceEmbeddingsConfig(workspaceId))?.apiKey).toBe("sk-keep-me");
+
+    // An explicit null clears it.
+    await upsertWorkspaceSettings({
+      workspaceId,
+      embeddings: { apiKey: null },
+      updatedByUserId: null,
+    });
+    expect((await getWorkspaceSettings(workspaceId))?.embeddings.hasApiKey).toBe(false);
+    expect((await getWorkspaceEmbeddingsConfig(workspaceId))?.apiKey).toBeNull();
+  });
+
+  it("does not disturb embeddings settings when an unrelated tab saves", async () => {
+    await upsertWorkspaceSettings({
+      workspaceId,
+      embeddings: { provider: "local", localDtype: "fp16" },
+      updatedByUserId: null,
+    });
+    await upsertWorkspaceSettings({ workspaceId, retrievalTopK: 9, updatedByUserId: null });
+
+    const view = await getWorkspaceSettings(workspaceId);
+    expect(view?.retrievalTopK).toBe(9);
+    expect(view?.embeddings).toMatchObject({ provider: "local", localDtype: "fp16" });
   });
 });

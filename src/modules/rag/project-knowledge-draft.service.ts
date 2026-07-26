@@ -47,7 +47,7 @@ import {
   runProjectKnowledgeLint,
   type ProjectKnowledgeCompilationMode,
 } from "./project-knowledge-compiled.service";
-import { createEmbeddingProvider } from "./embedding-provider";
+import { createWorkspaceEmbeddingProvider } from "./embedding-settings.service";
 import { syncProjectKnowledgeEntryEmbeddings } from "./embedding-store.service";
 import {
   detectProjectKnowledgeHardConflicts,
@@ -787,6 +787,16 @@ export async function publishProjectKnowledgeDraft(input: {
         draftId: draft.id,
         operationCount: asArray(draft.operations_json).length,
         freshnessStatus,
+        // Read back by loadLatestProjectKnowledgeSourceHashes on the next incremental
+        // compile so it can hash-compare against this exact set of sources, rather than
+        // falling back to the "updated since last extraction" timestamp heuristic --
+        // which wrongly treats a work item as already accounted for whenever its Azure
+        // DevOps updatedDate predates the last extraction, even if this is the first
+        // time it has ever been indexed (e.g. newly in scope after widening a fetch
+        // limit or filter, with an old, untouched updatedDate).
+        sourceWorkItemHashes: Object.fromEntries(
+          frozenManifest.map((entry) => [entry.sourceWorkItemId, entry.contentHash]),
+        ),
       },
       baseRevisionId: draft.base_revision_id,
       sourceManifest: frozenManifest,
@@ -869,7 +879,7 @@ export async function publishProjectKnowledgeDraft(input: {
   // missing or failing embedding backend must never fail or roll back the
   // published draft, it only means the Business Owner Assistant's knowledge
   // search stays lexical until the next successful publish.
-  const embeddingProvider = createEmbeddingProvider();
+  const embeddingProvider = await createWorkspaceEmbeddingProvider(scope.workspaceId);
   if (embeddingProvider) {
     try {
       await syncProjectKnowledgeEntryEmbeddings({ scope, provider: embeddingProvider });

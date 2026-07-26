@@ -143,6 +143,7 @@
     "src/modules/rag/auto-context-resolver.service.ts",
     "src/modules/rag/context-auto-update-run-history.service.ts",
     "src/modules/rag/context-chatbot-retrieval.service.ts",
+    "src/modules/rag/embedding-settings.service.ts",
     "src/modules/rag/embedding-store.service.ts",
     "src/modules/rag/hybrid-chunk-search.ts",
     "src/modules/rag/local-embedding.ts",

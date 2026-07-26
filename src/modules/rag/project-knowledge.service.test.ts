@@ -528,6 +528,33 @@ describe("work item selection for compilation", () => {
     expect(userPrompt.sources.map((item: { sourceGroup: string }) => item.sourceGroup)).toEqual(["source_1"]);
     expect(userPrompt.sources[0].citationSources[0].text).toBe("Customer checks out");
   });
+
+  it("always prompts a newly-indexed item under the timestamp baseline, even with an old updatedDate", async () => {
+    // Regression: a work item outside the top-N most-recently-changed (e.g. only
+    // indexed after widening a fetch limit or filter) can have an updatedDate long
+    // before the last extraction, purely because it hasn't been touched in Azure
+    // DevOps recently -- not because it was ever compiled before. The timestamp
+    // fallback must not mistake "old updatedDate" for "already accounted for."
+    setWorkItems([
+      workItemRow({ azure_work_item_id: "1", updated_date: "2026-01-15T00:00:00.000Z" }),
+      workItemRow({ azure_work_item_id: "2", title: "Long-untouched backlog item", updated_date: "2020-01-01T00:00:00.000Z" }),
+    ]);
+    stubExistingKnowledge({
+      // Knowledge only ever cited "1" -- "2" has never been part of any compile.
+      snapshot: snapshotRow(
+        knowledgeBase({ modules: [kbModule({ sourceWorkItemIds: ["1"] })] }),
+        { extracted_at: "2026-02-01T00:00:00.000Z" },
+      ),
+    });
+
+    const draft = await buildProjectKnowledgeManualDraft({ scope: projectScope(), mode: "incremental" });
+
+    expect(draft.mode).toBe("incremental");
+    expect(draft.changedSourceWorkItemCount).toBe(1);
+    expect(draft.retiredSourceWorkItemCount).toBe(0);
+    const userPrompt = JSON.parse(draft.batches[0].userPrompt);
+    expect(userPrompt.sources[0].citationSources[0].text).toBe("Long-untouched backlog item");
+  });
 });
 
 describe("loadProjectKnowledgeContext", () => {

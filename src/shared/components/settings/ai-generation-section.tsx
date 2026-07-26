@@ -19,6 +19,7 @@ import {
   type Provider,
 } from "./section-card"
 import { credentialBadge } from "./connections-section"
+import { SemanticSearchSection } from "./semantic-search-section"
 
 type CredentialSummary = {
   status: "not_configured" | "configured" | "invalid" | "expired"
@@ -43,6 +44,7 @@ export function AiGenerationSection() {
   return (
     <div className="space-y-4">
       <AiProviderCard />
+      <SemanticSearchSection />
       <OutputCapCard />
     </div>
   )

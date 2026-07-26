@@ -2,7 +2,8 @@ import "server-only";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { sqlAll } from "@/modules/shared/infrastructure/database/db";
-import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
+import { type EmbeddingProvider } from "./embedding-provider";
+import { createWorkspaceEmbeddingProvider } from "./embedding-settings.service";
 import { searchProjectContextByEmbedding } from "./embedding-store.service";
 import { searchProjectContextByTrigram } from "./trigram-search";
 import { fuseByReciprocalRank } from "./hybrid-ranking";
@@ -78,7 +79,9 @@ export async function searchProjectChunksHybrid(input: {
   }
 
   const embeddingProvider =
-    input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
+    input.embeddingProvider !== undefined
+      ? input.embeddingProvider
+      : await createWorkspaceEmbeddingProvider(scope.workspaceId);
   let semanticRows: HybridChunkRow[] = [];
   if (embeddingProvider) {
     try {

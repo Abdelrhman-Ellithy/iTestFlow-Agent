@@ -81,10 +81,14 @@ compiled knowledge entries into the same table under a separate
 `category`/`entryKey` identity rather than its per-save row id, since
 `project_knowledge_entries` gets a fresh id on every save — see
 `syncProjectKnowledgeEntryEmbeddings` in `src/modules/rag/embedding-store.service.ts`).
-The recommended backend is `local`: nomic-embed-text runs in-process via
+The default backend is `local`: nomic-embed-text runs in-process via
 transformers.js/ONNX (`src/modules/rag/local-embedding.ts`), auto-downloading
-quantized weights (~70MB) into `data/model-cache` on first use — zero user setup.
+quantized weights (~131 MB) into `data/model-cache` on first use — zero user setup.
 Server/cloud alternatives: local Ollama, any OpenAI-compatible server, or Gemini.
+All of it is configurable per workspace from Settings → AI & Generation → Semantic
+Search (`src/modules/rag/embedding-settings.service.ts` resolves a stored override
+field-by-field over the `EMBEDDINGS_*` deployment defaults; the API key is stored
+AES-256-GCM encrypted, never returned to the browser).
 Nomic models get retrieval task prefixes and Gemini gets retrieval task types
 (document vs. query) applied automatically.
 

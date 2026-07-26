@@ -15,7 +15,8 @@ import { buildFtsQueryWithDynamicSynonyms } from "./full-text-search";
 import { searchProjectKnowledgeByTrigram } from "./trigram-search";
 import { fuseByReciprocalRank } from "./hybrid-ranking";
 import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
-import { createEmbeddingProvider } from "./embedding-provider";
+import { type EmbeddingProvider } from "./embedding-provider";
+import { createWorkspaceEmbeddingProvider } from "./embedding-settings.service";
 import { searchProjectKnowledgeByEmbedding } from "./embedding-store.service";
 
 export type ContextChatbotContextEvidence = {
@@ -391,11 +392,12 @@ export async function retrieveContextChatbotEvidence(input: {
   const knowledgeLimit = input.knowledgeLimit ?? 10;
   const maxContextChunksPerWorkItem = input.maxContextChunksPerWorkItem ?? 2;
 
-  // Resolved once and reused for dynamic synonym resolution here; searchContext and
-  // searchKnowledge independently resolve their own provider for semantic search
-  // (createEmbeddingProvider is a cheap, stateless env-read, not worth threading
-  // through every call for reuse).
-  const ftsQuery = await buildFtsQueryWithDynamicSynonyms(input.query, createEmbeddingProvider());
+  // Resolved once and threaded into every consumer below. Resolution now reads the
+  // workspace's Settings override before falling back to the environment, so
+  // letting searchContext/searchKnowledge each re-resolve would mean three
+  // redundant settings reads per chat message.
+  const embeddingProvider = await createWorkspaceEmbeddingProvider(scope.workspaceId);
+  const ftsQuery = await buildFtsQueryWithDynamicSynonyms(input.query, embeddingProvider);
   const selectedWorkItemIds = Array.from(new Set(input.selectedWorkItemIds ?? []));
   if (!ftsQuery) {
     const selected = selectedWorkItemIds.length
@@ -409,7 +411,7 @@ export async function retrieveContextChatbotEvidence(input: {
     return { context: selected, knowledge: await getFallbackKnowledge({ scope, limit: knowledgeLimit }) };
   }
 
-  const knowledge = await searchKnowledge({ scope, ftsQuery, rawQuery: input.query, limit: knowledgeLimit });
+  const knowledge = await searchKnowledge({ scope, ftsQuery, rawQuery: input.query, limit: knowledgeLimit, embeddingProvider });
   const trustedCompiled = knowledge.length > 0 && await hasTrustedCompiledKnowledge(scope);
   const selected = selectedWorkItemIds.length
     ? await loadSelectedContext({
@@ -425,6 +427,7 @@ export async function retrieveContextChatbotEvidence(input: {
     rawQuery: input.query,
     limit: contextLimit,
     maxChunksPerWorkItem: maxContextChunksPerWorkItem,
+    embeddingProvider,
   });
   const context = mergeContextEvidence(selected, searched, contextLimit, maxContextChunksPerWorkItem);
   return {
@@ -521,6 +524,7 @@ async function searchContext(input: {
   rawQuery: string;
   limit: number;
   maxChunksPerWorkItem?: number;
+  embeddingProvider?: EmbeddingProvider | null;
 }) {
   const maxChunksPerWorkItem = positiveIntegerOrDefault(input.maxChunksPerWorkItem, input.limit);
   // searchProjectChunksHybrid never throws (every source is independently caught
@@ -532,6 +536,7 @@ async function searchContext(input: {
     rawQuery: input.rawQuery,
     topK: input.limit,
     maxChunksPerWorkItem,
+    embeddingProvider: input.embeddingProvider,
   });
   return fused.map(({ row }) => ({
     sourceType: "project_context" as const,
@@ -565,7 +570,13 @@ export function limitContextEvidenceByWorkItem<TItem extends { workItemId: strin
   return selected;
 }
 
-async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; rawQuery: string; limit: number }) {
+async function searchKnowledge(input: {
+  scope: ProjectScope;
+  ftsQuery: string;
+  rawQuery: string;
+  limit: number;
+  embeddingProvider?: EmbeddingProvider | null;
+}) {
   let ftsRows: KnowledgeFtsRow[] = [];
   try {
     ftsRows = await sqlAll<KnowledgeFtsRow>(
@@ -601,7 +612,10 @@ async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; r
     console.error("Project chat knowledge trigram search failed", error);
   }
 
-  const embeddingProvider = createEmbeddingProvider();
+  const embeddingProvider =
+    input.embeddingProvider !== undefined
+      ? input.embeddingProvider
+      : await createWorkspaceEmbeddingProvider(input.scope.workspaceId);
   let semanticRows: KnowledgeFtsRow[] = [];
   if (embeddingProvider) {
     try {

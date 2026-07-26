@@ -70,6 +70,11 @@ describe("POST /api/context/index", () => {
     const invalid = await POST(jsonRequest("/api/context/index", { ...validBody, states: [] }));
     expect(invalid.status).toBe(400);
     expect(mocks.requireWorkflowContext).not.toHaveBeenCalled();
+
+    const limitTooHigh = await POST(jsonRequest("/api/context/index", { ...validBody, limit: 5001 }));
+    expect(limitTooHigh.status).toBe(400);
+    const limitTooLow = await POST(jsonRequest("/api/context/index", { ...validBody, limit: 0 }));
+    expect(limitTooLow.status).toBe(400);
   });
 
   it("requires an administrative role before resolving project scope", async () => {
@@ -89,6 +94,7 @@ describe("POST /api/context/index", () => {
       workItemTypes: ["User Story"],
       states: ["Active"],
       mode: "rebuild",
+      limit: undefined,
     });
     expect(mocks.completeWorkflowRun).toHaveBeenCalledWith({
       scope: trustedScope,
@@ -102,6 +108,14 @@ describe("POST /api/context/index", () => {
       },
     });
     expect(await response.json()).toMatchObject({ source: "live", analyticsRunId: "run-1" });
+  });
+
+  it("passes a user-selected fetch limit through to indexing", async () => {
+    const response = await POST(jsonRequest("/api/context/index", { ...validBody, limit: 2000 }));
+    expect(response.status).toBe(200);
+    expect(mocks.indexAzureWorkItemsAsProjectContext).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 2000 }),
+    );
   });
 
   it("fails an established analytics run on downstream rejection", async () => {

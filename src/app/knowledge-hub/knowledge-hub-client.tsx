@@ -29,6 +29,13 @@ import { patchJson, postJson } from "@/components/workflow/post-json"
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -41,6 +48,8 @@ import {
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
+  CONTEXT_FETCH_LIMIT_OPTIONS,
+  DEFAULT_CONTEXT_FETCH_LIMIT,
   DEFAULT_CONTEXT_STATES,
   DEFAULT_CONTEXT_WORK_ITEM_TYPES,
 } from "@/lib/project-context-defaults"
@@ -293,6 +302,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [hubView, setHubView] = useState<HubView>("explorer")
   const [workItemTypes, setWorkItemTypes] = useState<string[]>(DEFAULT_CONTEXT_WORK_ITEM_TYPES)
   const [states, setStates] = useState<string[]>(DEFAULT_CONTEXT_STATES)
+  const [fetchLimit, setFetchLimit] = useState<number>(DEFAULT_CONTEXT_FETCH_LIMIT)
   const [buildLoading, setBuildLoading] = useState(false)
   const [statusLoading, setStatusLoading] = useState(false)
   const [contextLoadingMore, setContextLoadingMore] = useState(false)
@@ -568,6 +578,12 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     invalidateBuildIndex()
   }
 
+  function changeFetchLimit(value: number) {
+    setHasUnfinishedWork(true)
+    setFetchLimit(value)
+    invalidateBuildIndex()
+  }
+
   async function indexContextForBuild() {
     if (!scope) throw new Error("Select an Azure DevOps project before loading the project index.")
     const data = await postJson<IndexResult>("/api/context/index", {
@@ -575,6 +591,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       workItemTypes,
       states,
       mode: "incremental",
+      limit: fetchLimit,
     })
     setResult(data)
     setPage(1)
@@ -922,6 +939,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                         <IndexLoadPanel
                           workItemTypes={workItemTypes}
                           states={states}
+                          fetchLimit={fetchLimit}
                           workItemTypeOptions={workItemMetadata?.workItemTypes ?? []}
                           stateOptions={workItemMetadata?.states ?? []}
                           metadataLoading={workItemMetadataLoading}
@@ -930,6 +948,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                           loading={buildLoading}
                           onWorkItemTypesChange={changeWorkItemTypes}
                           onStatesChange={changeStates}
+                          onFetchLimitChange={changeFetchLimit}
                           onRetryMetadata={retryWorkItemMetadata}
                           onLoad={loadProjectIndexForBuild}
                         />
@@ -1060,6 +1079,7 @@ function HubViewTab({
 function IndexLoadPanel({
   workItemTypes,
   states,
+  fetchLimit,
   workItemTypeOptions,
   stateOptions,
   metadataLoading,
@@ -1068,11 +1088,13 @@ function IndexLoadPanel({
   loading,
   onWorkItemTypesChange,
   onStatesChange,
+  onFetchLimitChange,
   onRetryMetadata,
   onLoad,
 }: {
   workItemTypes: string[]
   states: string[]
+  fetchLimit: number
   workItemTypeOptions: string[]
   stateOptions: string[]
   metadataLoading: boolean
@@ -1081,6 +1103,7 @@ function IndexLoadPanel({
   loading: boolean
   onWorkItemTypesChange: (values: string[]) => void
   onStatesChange: (values: string[]) => void
+  onFetchLimitChange: (value: number) => void
   onRetryMetadata: () => void
   onLoad: () => void
 }) {
@@ -1112,6 +1135,27 @@ function IndexLoadPanel({
             onRetry={onRetryMetadata}
             onChange={onStatesChange}
           />
+          <div className="space-y-1.5">
+            <Label htmlFor="context-fetch-limit">Work items to fetch</Label>
+            <Select
+              value={String(fetchLimit)}
+              onValueChange={(value) => onFetchLimitChange(Number(value))}
+            >
+              <SelectTrigger id="context-fetch-limit" className="w-full sm:w-56">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CONTEXT_FETCH_LIMIT_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={String(option)}>
+                    Up to {option.toLocaleString()}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs leading-5 text-muted-foreground">
+              Most recently changed work items are fetched first, up to this limit.
+            </p>
+          </div>
         </div>
         <div className="rounded-md border border-border bg-muted p-3 lg:w-[360px]">
           <div className="mb-3 text-xs leading-5 text-muted-foreground">
