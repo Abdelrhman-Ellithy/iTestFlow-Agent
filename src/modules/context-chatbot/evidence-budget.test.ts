@@ -95,7 +95,7 @@ describe("selectEvidenceWithinBudget", () => {
       knowledge: [{ text: "z".repeat(100_000) }, { text: "small" }],
       context: [],
     });
-    expect(result.knowledge[0]!.text.startsWith("z")).toBe(true);
+    expect((result.knowledge[0] as { text: string }).text.startsWith("z")).toBe(true);
   });
 
   it("reports what it considered, for observability", () => {

@@ -4,11 +4,15 @@ import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
+  CONTEXT_CHATBOT_HISTORY_BUDGET_SHARE,
   CONTEXT_CHATBOT_HISTORY_CONTENT_LIMIT,
   CONTEXT_CHATBOT_PROMPT_HISTORY_LIMIT,
   type ContextChatbotHistoryMessage,
 } from "@/modules/context-chatbot/context-chatbot-history";
-import { selectEvidenceWithinBudget } from "@/modules/context-chatbot/evidence-budget";
+import { FALLBACK_MAX_INPUT_TOKENS, selectEvidenceWithinBudget } from "@/modules/context-chatbot/evidence-budget";
+import { selectRelevantHistory, type ExchangeScorer } from "@/modules/context-chatbot/conversation-memory";
+import { cosineSimilarity } from "@/modules/rag/hybrid-ranking";
+import { createEmbeddingProvider } from "@/modules/rag/embedding-provider";
 import {
   retrieveContextChatbotEvidence,
   type ContextChatbotContextEvidence,
@@ -25,6 +29,23 @@ export type ContextChatbotCitation = {
   category?: string;
   sourceWorkItemIds?: string[];
 };
+
+/** Mirrors evidence-budget's safety margin so history and evidence share one convention. */
+const BUDGET_SAFETY_FRACTION_FOR_HISTORY = 0.9;
+
+/**
+ * Scores how relevant an earlier exchange is to the current question, using the same
+ * local embedding model retrieval uses. Returns undefined when the model is
+ * unavailable, which degrades conversation memory to plain recency.
+ */
+function buildExchangeScorer(): ExchangeScorer | undefined {
+  const provider = createEmbeddingProvider();
+  return async ({ question, exchanges }) => {
+    const [questionVector] = await provider.embed([question], "query");
+    const exchangeVectors = await provider.embed(exchanges.map((exchange) => exchange.text), "document");
+    return exchangeVectors.map((vector) => cosineSimilarity(questionVector!, vector));
+  };
+}
 
 /**
  * How many candidates retrieval returns for the budget to choose from. Not what is
@@ -51,10 +72,25 @@ export async function answerContextChatbot(input: {
     question,
   });
 
-  // Retrieve well beyond what will be sent: selection is now a token-budget decision
-  // made below, not a fixed count. Over-fetching is cheap (the semantic scan already
-  // reads every vector; the lexical queries are indexed) and it is the only way the
-  // budget has anything to choose from.
+  // The conversation accumulates; decide what is worth sending before anything is
+  // costed, since the chosen history is part of the fixed prompt the evidence budget
+  // is measured against.
+  const historyBudgetTokens = Math.floor(
+    (input.provider.maxInputTokens ?? FALLBACK_MAX_INPUT_TOKENS)
+      * BUDGET_SAFETY_FRACTION_FOR_HISTORY
+      * CONTEXT_CHATBOT_HISTORY_BUDGET_SHARE,
+  );
+  const history = await selectRelevantHistory({
+    history: input.history ?? [],
+    question,
+    budgetTokens: historyBudgetTokens,
+    scoreExchanges: buildExchangeScorer(),
+  });
+
+  // Retrieve well beyond what will be sent: selection is a token-budget decision made
+  // below, not a fixed count. Over-fetching is cheap (the semantic scan already reads
+  // every vector; the lexical queries are indexed) and it is the only way the budget
+  // has anything to choose from.
   const evidence = await retrieveContextChatbotEvidence({
     scope,
     query: question,
@@ -71,7 +107,7 @@ export async function answerContextChatbot(input: {
   // remainder of the model's configured input limit is what evidence may occupy.
   const fixedPromptText = [
     buildSystemPrompt(),
-    buildUserPrompt({ scope, question, history: input.history ?? [], context: [], knowledge: [] }),
+    buildUserPrompt({ scope, question, history, context: [], knowledge: [] }),
   ].join("\n");
   const budgeted = selectEvidenceWithinBudget({
     fixedPromptText,
@@ -107,7 +143,7 @@ export async function answerContextChatbot(input: {
     user: buildUserPrompt({
       scope,
       question,
-      history: input.history ?? [],
+      history,
       context: evidence.context,
       knowledge: evidence.knowledge,
     }),

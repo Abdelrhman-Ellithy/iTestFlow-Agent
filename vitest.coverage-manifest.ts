@@ -19,6 +19,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/auth/session.service.ts",
   "src/modules/bug-reporting/schemas/bug-report.schema.ts",
   "src/modules/context-chatbot/context-chatbot-history.ts",
+  "src/modules/context-chatbot/conversation-memory.ts",
   "src/modules/context-chatbot/evidence-budget.ts",
   "src/modules/context-selection/context-suggestion-sizing.ts",
   "src/modules/dashboard/dashboard-metrics.ts",
