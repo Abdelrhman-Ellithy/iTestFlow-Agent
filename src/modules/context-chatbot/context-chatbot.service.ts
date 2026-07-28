@@ -8,6 +8,7 @@ import {
   CONTEXT_CHATBOT_PROMPT_HISTORY_LIMIT,
   type ContextChatbotHistoryMessage,
 } from "@/modules/context-chatbot/context-chatbot-history";
+import { selectEvidenceWithinBudget } from "@/modules/context-chatbot/evidence-budget";
 import {
   retrieveContextChatbotEvidence,
   type ContextChatbotContextEvidence,
@@ -24,6 +25,14 @@ export type ContextChatbotCitation = {
   category?: string;
   sourceWorkItemIds?: string[];
 };
+
+/**
+ * How many candidates retrieval returns for the budget to choose from. Not what is
+ * sent — see selectEvidenceWithinBudget. Sized to comfortably cover a whole compiled
+ * knowledge base (~213 entries on a real project) without unbounded fetching.
+ */
+const CONTEXT_CANDIDATE_LIMIT = 40;
+const KNOWLEDGE_CANDIDATE_LIMIT = 120;
 
 export async function answerContextChatbot(input: {
   scope: ProjectScope;
@@ -42,14 +51,39 @@ export async function answerContextChatbot(input: {
     question,
   });
 
+  // Retrieve well beyond what will be sent: selection is now a token-budget decision
+  // made below, not a fixed count. Over-fetching is cheap (the semantic scan already
+  // reads every vector; the lexical queries are indexed) and it is the only way the
+  // budget has anything to choose from.
   const evidence = await retrieveContextChatbotEvidence({
     scope,
     query: question,
-    contextLimit: 10,
-    knowledgeLimit: 10,
+    contextLimit: CONTEXT_CANDIDATE_LIMIT,
+    knowledgeLimit: KNOWLEDGE_CANDIDATE_LIMIT,
     maxContextChunksPerWorkItem: 2,
     selectedWorkItemIds: input.selectedWorkItemIds,
+    // Follow-ups ("what about the rejected one?") mean nothing on their own. Retrieval
+    // previously got them verbatim while only the prompt saw the conversation, so the
+    // model knew what was asked but was grounded on evidence chosen without it.
+    history: input.history,
   });
+  // Everything in the prompt that is not evidence — its cost is known up front, so the
+  // remainder of the model's configured input limit is what evidence may occupy.
+  const fixedPromptText = [
+    buildSystemPrompt(),
+    buildUserPrompt({ scope, question, history: input.history ?? [], context: [], knowledge: [] }),
+  ].join("\n");
+  const budgeted = selectEvidenceWithinBudget({
+    fixedPromptText,
+    context: evidence.context,
+    knowledge: evidence.knowledge,
+    renderContext: renderContextItem,
+    renderKnowledge: renderKnowledgeItem,
+    maxInputTokens: input.provider.maxInputTokens,
+  });
+  evidence.context = budgeted.context;
+  evidence.knowledge = budgeted.knowledge;
+
   const { citations, contextCitationCount, linkedWorkItemCount } = buildCitations(evidence.context, evidence.knowledge);
 
   if (!citations.length) {
@@ -105,6 +139,9 @@ export async function answerContextChatbot(input: {
       retrievedKnowledgeCount: evidence.knowledge.length,
       linkedWorkItemCount,
       citationCount: citations.length,
+      // Logged so budget behaviour is observable in production: whether evidence was
+      // actually trimmed, and how much of the model's window it used.
+      evidenceBudget: budgeted.budget,
       knowledgeRetrievalMode: evidence.retrievalMode ?? "raw_wins",
     },
   });
@@ -176,6 +213,14 @@ function renderHistory(history: ContextChatbotHistoryMessage[]) {
 
   if (!recent.length) return "No prior chat history in this session.";
   return recent.map((message) => `- ${message.role}: ${message.content}`).join("\n");
+}
+
+function renderContextItem(item: ContextChatbotContextEvidence) {
+  return renderContext([item]);
+}
+
+function renderKnowledgeItem(item: ContextChatbotKnowledgeEvidence) {
+  return renderKnowledge([item]);
 }
 
 function renderContext(context: ContextChatbotContextEvidence[]) {

@@ -5,11 +5,11 @@ import { assertProjectScope, type ProjectScope } from "@/modules/projects/projec
 import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azure-devops-adapter";
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
+import { DEFAULT_CONTEXT_FETCH_LIMIT, MAX_CONTEXT_FETCH_LIMIT } from "@/lib/project-context-defaults";
 import { chunkText } from "./rag-pipeline.service";
 import { ensureProjectContextSearchIndex, refreshProjectContextSearchIndex } from "./context-chatbot-retrieval.service";
 import { buildFtsQueryWithDynamicSynonyms } from "./full-text-search";
-import { type EmbeddingProvider } from "./embedding-provider";
-import { createWorkspaceEmbeddingProvider } from "./embedding-settings.service";
+import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
 import { syncProjectChunkEmbeddings } from "./embedding-store.service";
 import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
@@ -172,6 +172,11 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
   mode?: "incremental" | "rebuild";
   /** How many matching work items to fetch, most-recently-changed first. Defaults to 200 (the adapter's own default) when unset. */
   limit?: number;
+  /**
+   * Seam for tests: undefined uses the built-in local model, null skips embedding
+   * entirely so a test never loads the ~131 MB ONNX weights.
+   */
+  embeddingProvider?: EmbeddingProvider | null;
 }) {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
@@ -184,6 +189,15 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
     workItemTypes: input.workItemTypes,
     states: input.states,
   });
+
+  // Mirrors the adapter's own clamping so truncation can be detected here.
+  const effectiveLimit = Math.min(Math.max(Math.trunc(input.limit ?? DEFAULT_CONTEXT_FETCH_LIMIT), 1), MAX_CONTEXT_FETCH_LIMIT);
+  // The fetch is ordered most-recently-changed first and cut at the limit, so a full
+  // result set is indistinguishable from a truncated one except by size. When it is
+  // truncated, absence from this run's results does NOT mean an item left scope — it
+  // may simply sit beyond the window. Deactivating on that basis hides work items the
+  // user deliberately chose to index and that indexed successfully on an earlier run.
+  const fetchWasTruncated = workItems.length >= effectiveLimit;
 
   const now = nowIso();
   const indexRunId = createId("ctxrun");
@@ -386,7 +400,10 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
       indexedChunkCount += chunks.length;
     }
 
-    if (mode === "incremental") {
+    // Only retire items when this run saw the COMPLETE matching set. A truncated
+    // fetch cannot distinguish "left scope" from "beyond the window", and guessing
+    // wrong makes previously indexed content silently unsearchable.
+    if (mode === "incremental" && !fetchWasTruncated) {
       for (const row of existingRows) {
         if (fetchedIds.has(row.azure_work_item_id)) continue;
         inactiveCount += await sqlRun(MARK_INACTIVE_WORK_ITEM_SQL, {
@@ -446,7 +463,8 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
   // double-click racing a scheduled sync — the manual route has no job-queue dedup)
   // redundantly re-embedding the same content; a lock miss just skips this call's
   // embedding sync rather than duplicating the work.
-  const embeddingProvider = await createWorkspaceEmbeddingProvider(scope.workspaceId);
+  const embeddingProvider =
+    input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
   let embeddingSummary: { embeddedChunkCount: number; removedEmbeddingCount: number } | undefined;
   if (embeddingProvider) {
     try {
@@ -643,9 +661,9 @@ export async function retrieveStoredProjectContext(input: {
   workItemIds?: string[];
   maxChunksPerWorkItem?: number;
   /**
-   * Semantic-retrieval override, mainly for tests: undefined resolves the
-   * deployment-configured backend (EMBEDDINGS_PROVIDER env), null disables
-   * semantic retrieval for this call.
+   * Semantic-retrieval override, mainly for tests: undefined uses the built-in
+   * local model, null disables semantic retrieval for this call so a test never
+   * loads the ~131 MB ONNX weights.
    */
   embeddingProvider?: EmbeddingProvider | null;
 }): Promise<LlmContextSource[]> {
@@ -690,9 +708,7 @@ export async function retrieveStoredProjectContext(input: {
   // resolution (see buildFtsQueryWithDynamicSynonyms) and for semantic search below,
   // instead of letting searchProjectChunksHybrid re-resolve it independently.
   const embeddingProvider =
-    input.embeddingProvider !== undefined
-      ? input.embeddingProvider
-      : await createWorkspaceEmbeddingProvider(scope.workspaceId);
+    input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
   const ftsQuery = await buildFtsQueryWithDynamicSynonyms(input.query, embeddingProvider);
   if (!ftsQuery) return [];
   await ensureProjectContextSearchIndex({ scope });

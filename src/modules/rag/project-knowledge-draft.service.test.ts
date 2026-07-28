@@ -1018,6 +1018,7 @@ describe("draft publication guards", () => {
     await publishProjectKnowledgeDraft({
       scope,
       actor: "owner-1",
+      embeddingProvider: null,
       draftId: "draft-child",
     });
 
@@ -1060,7 +1061,7 @@ describe("draft publication guards", () => {
       return undefined;
     });
 
-    await publishProjectKnowledgeDraft({ scope, actor: "owner-2", draftId: "draft-child" });
+    await publishProjectKnowledgeDraft({ scope, actor: "owner-2", draftId: "draft-child", embeddingProvider: null });
 
     expect(database.sqlRun).toHaveBeenCalledWith(
       expect.stringContaining("status = 'superseded'"),

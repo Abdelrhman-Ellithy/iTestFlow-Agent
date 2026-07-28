@@ -62,6 +62,83 @@ describe("RAG pipeline", () => {
     expect(chunks[1]!.content.endsWith("y".repeat(200))).toBe(true);
   });
 
+  it("breaks chunks on word boundaries instead of mid-word", () => {
+    // A blind character cut produces fragments that are junk tokens for full-text
+    // search and shift the chunk's embedding away from its real meaning.
+    const text = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
+    const chunks = chunkText({
+      projectId: "p",
+      azureProjectId: "a",
+      sourceId: "WI:1",
+      sourceType: "azure_work_item",
+      title: "Story",
+      text,
+      chunkSize: 20,
+      chunkOverlap: 0,
+    });
+
+    for (const chunk of chunks) {
+      // Every chunk is made of whole words from the original text.
+      for (const word of chunk.content.split(/\s+/).filter(Boolean)) {
+        expect(text.split(/\s+/)).toContain(word);
+      }
+    }
+  });
+
+  it("prefers a sentence boundary over a bare word boundary", () => {
+    // The boundary search looks back a bounded fraction of the chunk size, so the
+    // sentence end has to fall inside that window for it to win over a plain space.
+    const text = `${"filler ".repeat(10)}the sentence ends here. and then the text continues well beyond`;
+    const [first] = chunkText({
+      projectId: "p",
+      azureProjectId: "a",
+      sourceId: "WI:1",
+      sourceType: "azure_work_item",
+      title: "Story",
+      text,
+      chunkSize: 95,
+      chunkOverlap: 0,
+    });
+    expect(first!.content.endsWith(".")).toBe(true);
+    expect(first!.content).toContain("the sentence ends here.");
+  });
+
+  it("loses no text when shortening a chunk to a clean boundary", () => {
+    // Regression guard: the stride must follow the actual break point, not a fixed
+    // size, or the characters between the break and the nominal stride vanish.
+    const text = Array.from({ length: 60 }, (_, index) => `word${index}`).join(" ");
+    const chunks = chunkText({
+      projectId: "p",
+      azureProjectId: "a",
+      sourceId: "WI:1",
+      sourceType: "azure_work_item",
+      title: "Story",
+      text,
+      chunkSize: 40,
+      chunkOverlap: 0,
+    });
+
+    const seen = new Set(chunks.flatMap((chunk) => chunk.content.split(/\s+/).filter(Boolean)));
+    for (const word of text.split(" ")) expect(seen).toContain(word);
+  });
+
+  it("still cuts at the hard limit when there is no boundary to find", () => {
+    // One unbroken run (a base64 blob) must not collapse chunks to a tiny size.
+    const text = "z".repeat(500);
+    const chunks = chunkText({
+      projectId: "p",
+      azureProjectId: "a",
+      sourceId: "WI:1",
+      sourceType: "azure_work_item",
+      title: "Story",
+      text,
+      chunkSize: 100,
+      chunkOverlap: 0,
+    });
+    expect(chunks).toHaveLength(5);
+    expect(chunks[0]!.content).toHaveLength(100);
+  });
+
   it("never emits a trailing chunk that is a pure subset of the previous one", () => {
     const exactFit = chunkText({
       projectId: "p",

@@ -43,6 +43,7 @@ async function sync(items: Requirement[]) {
     adapter: fakeAzureAdapter({ fetchWorkItems: vi.fn(async () => items) }),
     workItemTypes: ["User Story"],
     states: ["Active"],
+    embeddingProvider: null,
   });
 }
 

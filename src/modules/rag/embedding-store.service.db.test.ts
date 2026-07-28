@@ -11,6 +11,7 @@ import {
   retrieveStoredProjectContext,
 } from "@/modules/rag/project-context-store.service";
 import {
+  chunkVectorReference,
   searchProjectContextByEmbedding,
   syncProjectChunkEmbeddings,
 } from "@/modules/rag/embedding-store.service";
@@ -53,7 +54,7 @@ function textToVector(text: string): number[] {
 
 function fakeEmbeddingProvider(model = "fake-model"): EmbeddingProvider {
   return {
-    name: "ollama",
+    name: "local",
     model,
     vectorReference: `ollama:${model}`,
     embed: async (texts) => texts.map(textToVector),
@@ -90,6 +91,7 @@ async function sync(items: Requirement[], mode?: "incremental" | "rebuild") {
     workItemTypes: ["User Story"],
     states: ["Active"],
     mode,
+    embeddingProvider: null,
   });
 }
 
@@ -129,16 +131,17 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
 
     const rows = await embeddingRows();
     expect(rows).toHaveLength(2);
-    expect(rows.every((row) => row.vector_reference === "ollama:fake-model")).toBe(true);
+    expect(rows.every((row) => row.vector_reference === chunkVectorReference(provider))).toBe(true);
   });
 
   it("re-embeds in place when the configured model changes, without duplicating rows", async () => {
-    const swapped = await syncProjectChunkEmbeddings({ scope, provider: fakeEmbeddingProvider("other-model") });
+    const otherProvider = fakeEmbeddingProvider("other-model");
+    const swapped = await syncProjectChunkEmbeddings({ scope, provider: otherProvider });
     expect(swapped).toEqual({ embeddedChunkCount: 2, removedEmbeddingCount: 0 });
 
     const rows = await embeddingRows();
     expect(rows).toHaveLength(2);
-    expect(rows.every((row) => row.vector_reference === "ollama:other-model")).toBe(true);
+    expect(rows.every((row) => row.vector_reference === chunkVectorReference(otherProvider))).toBe(true);
   });
 
   it("removes embeddings whose chunks were deleted by a rebuild, and re-embeds surviving ones", async () => {
@@ -219,7 +222,7 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
   it("degrades to lexical results when the embedding backend fails", async () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const failing: EmbeddingProvider = {
-      name: "ollama",
+      name: "local",
       model: "other-model",
       vectorReference: "ollama:other-model",
       embed: async () => {
@@ -256,8 +259,8 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
     expect(first.embeddedChunkCount).toBeGreaterThanOrEqual(1);
 
     const beforeRow = (await embeddingRows()).find((row) => row.chunk_id.includes("_301_"));
-    const beforeVectorJson = await sqlAll<{ vector_json: string }>(
-      `SELECT vector_json FROM embeddings WHERE chunk_id = @chunkId`,
+    const beforeVector = await sqlAll<{ vector: number[] }>(
+      `SELECT vector FROM embeddings WHERE chunk_id = @chunkId`,
       { chunkId: beforeRow!.chunk_id },
     );
 
@@ -267,11 +270,11 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
     const second = await syncProjectChunkEmbeddings({ scope, provider });
     expect(second.embeddedChunkCount).toBeGreaterThanOrEqual(1);
 
-    const afterVectorJson = await sqlAll<{ vector_json: string }>(
-      `SELECT vector_json FROM embeddings WHERE chunk_id = @chunkId`,
+    const afterVector = await sqlAll<{ vector: number[] }>(
+      `SELECT vector FROM embeddings WHERE chunk_id = @chunkId`,
       { chunkId: beforeRow!.chunk_id },
     );
-    expect(afterVectorJson[0]!.vector_json).not.toBe(beforeVectorJson[0]!.vector_json);
+    expect(afterVector[0]!.vector).not.toEqual(beforeVector[0]!.vector);
   });
 
   it("persists already-embedded batches when a later batch's embedding call fails", async () => {
@@ -291,7 +294,7 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
 
     let call = 0;
     const failingOnSecondBatch: EmbeddingProvider = {
-      name: "ollama",
+      name: "local",
       model: "batch-fail-model",
       vectorReference: "ollama:batch-fail-model",
       embed: async (texts) => {
@@ -307,11 +310,58 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
 
     const persisted = await sqlAll<{ count: number }>(
       `SELECT COUNT(*)::int AS count FROM embeddings WHERE project_id = @projectId AND vector_reference = @vectorReference`,
-      { projectId: PROJ, vectorReference: "ollama:batch-fail-model" },
+      { projectId: PROJ, vectorReference: chunkVectorReference(failingOnSecondBatch) },
     );
     // The first batch's chunks were persisted before the second batch's failure;
     // without the fix this would be 0 (the whole call's work discarded).
     expect(persisted[0]!.count).toBe(MAX_EMBED_BATCH_SIZE);
     expect(persisted[0]!.count).toBeLessThan(items.length);
+  });
+  it("prefixes every chunk's embedded text with its work item title", async () => {
+    // Chunking splits one work item's composed text, so only the FIRST chunk contains
+    // the "Title: ..." line — continuation chunks are anonymous fragments. Both
+    // lexical signals already index `title || content` for every row
+    // (document_chunks_fts.tsv and the trigram index), so embedding content alone left
+    // semantic search as the only signal blind to the title on continuation chunks.
+    //
+    // Asserted on the text handed to the model, because the end-to-end effect is not
+    // separable: chunk 0 carries the title in its body anyway, so the work item is
+    // still found either way — what changes is which CHUNK ranks best.
+    const longBody = Array.from(
+      { length: 40 },
+      (_, index) =>
+        `Step ${index}: the operator scans each shelf label, confirms the counted quantity against the recorded figure, and records any discrepancy with a reason code.`,
+    ).join(" ");
+    await sync([
+      requirement({
+        id: "770",
+        azureProjectId: PROJ,
+        title: "Warehouse stocktake reconciliation",
+        description: longBody,
+        acceptanceCriteria: "Given a completed count, when discrepancies exist, then require approval.",
+        tags: [],
+      }),
+    ]);
+
+    const embedded: string[] = [];
+    const recording: EmbeddingProvider = {
+      name: "local",
+      model: "title-prefix-model",
+      vectorReference: "ollama:title-prefix-model",
+      embed: async (texts) => {
+        embedded.push(...texts);
+        return texts.map(() => [1, 0, 0]);
+      },
+    };
+    await syncProjectChunkEmbeddings({ scope, provider: recording });
+
+    const chunksFor770 = embedded.filter((text) => text.includes("shelf label"));
+    // The body is long enough to split, so this only proves anything with >1 chunk.
+    expect(chunksFor770.length).toBeGreaterThan(1);
+    // EVERY chunk carries the title, including the continuation chunks whose bodies
+    // contain none of the title's words.
+    for (const text of chunksFor770) {
+      expect(text.startsWith("Warehouse stocktake reconciliation")).toBe(true);
+    }
   });
 });

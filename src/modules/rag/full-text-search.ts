@@ -80,8 +80,39 @@ export const QA_DOMAIN_SYNONYMS: Record<string, string[]> = {
 
 const MAX_QUERY_TERMS = 16;
 
+/**
+ * English function words carry no retrieval signal but appear in nearly every
+ * indexed chunk. They must be dropped from the query because:
+ *
+ *  - Terms are ORed (`the:* | card:* | ...`), so one stopword makes the query match
+ *    the entire corpus.
+ *  - The index uses to_tsvector('simple', ...), which unlike the 'english' config
+ *    does NOT strip stopwords, so they really are present in every document.
+ *  - The resulting ts_rank_cd ordering is then driven by function-word density,
+ *    i.e. noise — and because that ranking is fed into reciprocal rank fusion as a
+ *    peer of semantic and trigram results, the noise can outvote a correct semantic
+ *    match and put the wrong work item first.
+ *
+ * Deliberately limited to closed-class grammatical words. Domain words that look
+ * unimportant in English ("all", "new", "old", "run") are NOT listed: they are
+ * meaningful in QA and Azure DevOps text.
+ */
+const QUERY_STOPWORDS = new Set([
+  "the", "and", "but", "for", "nor", "yet", "was", "were", "are", "been", "being",
+  "who", "whom", "whose", "what", "when", "where", "why", "how", "which", "that",
+  "this", "these", "those", "there", "here", "then", "than", "with", "without",
+  "from", "into", "onto", "out", "off", "over", "under", "again", "once", "any",
+  "some", "such", "only", "own", "same", "too", "very", "can", "will", "just",
+  "should", "would", "could", "may", "might", "must", "have", "has", "had",
+  "having", "does", "did", "doing", "you", "your", "yours", "our", "ours", "its",
+  "his", "her", "hers", "their", "theirs", "them", "they", "she", "him", "himself",
+  "herself", "itself", "themselves", "myself", "yourself", "about", "above",
+  "below", "between", "through", "during", "before", "after", "because", "while",
+  "get", "got", "let", "make", "made", "want", "need", "like", "tried", "try",
+]);
+
 function tokenizeQuery(value: string): string[] {
-  return Array.from(
+  const terms = Array.from(
     new Set(
       value
         .toLowerCase()
@@ -89,7 +120,13 @@ function tokenizeQuery(value: string): string[] {
         .map((term) => term.trim())
         .filter((term) => term.length > 2),
     ),
-  ).slice(0, MAX_QUERY_TERMS);
+  );
+  const meaningful = terms.filter((term) => !QUERY_STOPWORDS.has(term));
+  // A query made entirely of function words ("what are these?") has no lexical
+  // signal to offer. Keep the original terms rather than returning nothing, so the
+  // caller still gets a query it can run instead of silently skipping search --
+  // semantic and trigram remain the useful signals for such a query.
+  return (meaningful.length ? meaningful : terms).slice(0, MAX_QUERY_TERMS);
 }
 
 function collectStaticExpansions(terms: string[], seen: Set<string>): string[] {

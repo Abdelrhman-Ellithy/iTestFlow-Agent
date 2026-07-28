@@ -71,9 +71,8 @@ queries the same two FTS mirror tables via PostgreSQL's `pg_trgm` extension
 word-prefix FTS matching misses (e.g. "flow" matching "workflow"). Queries under 3
 characters skip trigram entirely (too little signal to compare).
 
-**Semantic retrieval** (deployment-configured via `EMBEDDINGS_PROVIDER` in `.env`; on
-by default via the zero-setup local backend, set to `off` to disable). When enabled,
-context indexing embeds work-item chunks
+**Semantic retrieval** (always on, no configuration). Context indexing embeds
+work-item chunks
 through `src/modules/rag/embedding-provider.ts` into the `embeddings` table
 (`source_type = 'azure_work_item_chunk'`), and every knowledge base save embeds the
 compiled knowledge entries into the same table under a separate
@@ -81,15 +80,17 @@ compiled knowledge entries into the same table under a separate
 `category`/`entryKey` identity rather than its per-save row id, since
 `project_knowledge_entries` gets a fresh id on every save — see
 `syncProjectKnowledgeEntryEmbeddings` in `src/modules/rag/embedding-store.service.ts`).
-The default backend is `local`: nomic-embed-text runs in-process via
-transformers.js/ONNX (`src/modules/rag/local-embedding.ts`), auto-downloading
-quantized weights (~131 MB) into `data/model-cache` on first use — zero user setup.
-Server/cloud alternatives: local Ollama, any OpenAI-compatible server, or Gemini.
-All of it is configurable per workspace from Settings → AI & Generation → Semantic
-Search (`src/modules/rag/embedding-settings.service.ts` resolves a stored override
-field-by-field over the `EMBEDDINGS_*` deployment defaults; the API key is stored
-AES-256-GCM encrypted, never returned to the browser).
-Nomic models get retrieval task prefixes and Gemini gets retrieval task types
+Exactly one model is used and it cannot be changed: nomic-embed-text-v1.5 runs
+in-process via transformers.js/ONNX (`src/modules/rag/local-embedding.ts`),
+auto-downloading quantized weights (~131 MB) into `data/model-cache` on first use —
+zero user setup, no server, no API key, no setting. Pinning the model is deliberate:
+vectors are only comparable within the model that produced them, so a swappable
+backend would silently invalidate every stored vector until a full re-index. A model
+that cannot be loaded degrades retrieval to full-text + trigram rather than failing.
+Retrieval quality is proven against the real weights in
+`embedding-model.quality.db.test.ts` and `embedding-retrieval.quality.db.test.ts`
+(`npm run test:model`).
+Nomic models get retrieval task prefixes
 (document vs. query) applied automatically.
 
 **Where each signal is wired in**: `src/modules/rag/hybrid-chunk-search.ts` is the
@@ -99,23 +100,23 @@ Assistant's context search — extracted so both call sites share one ranking/fu
 implementation instead of drifting apart. The Business Owner Assistant's knowledge
 search (`searchKnowledge` in `src/modules/rag/context-chatbot-retrieval.service.ts`)
 independently fuses the same three signals against compiled knowledge entries. When
-neither trigram nor semantic contributes anything to a given call — the common case
-for a deployment with embeddings off — the raw full-text ranking is kept as-is
+neither trigram nor semantic contributes anything to a given call — e.g. the model
+failed to load, or trigram found nothing — the raw full-text ranking is kept as-is
 rather than run through reciprocal rank fusion, since fusing a single list would
 flatten `ts_rank_cd`'s real score spread for no benefit.
 
 **Known limitation — non-English content and the local embedding model.**
-`nomic-embed-text-v1.5` (the local default) is English-centric. This codebase
+`nomic-embed-text-v1.5` is English-centric. This codebase
 explicitly supports Arabic-language project content elsewhere (see the Arabic
 Unicode range preserved in `normalizeKey` in `src/modules/rag/project-knowledge.service.ts`),
 and Arabic content will get materially weaker semantic search quality than English
-content under the local default — full-text search and trigram search are
+content — full-text search and trigram search are
 unaffected, since both are language-agnostic (`to_tsvector('simple', ...)` does no
 stemming, and trigram similarity is character-based). If a project's content is
-predominantly non-English, set `EMBEDDINGS_MODEL` to a multilingual embedding model
-via the `local`, `ollama`, or `openai`-compatible backend rather than relying on the
-English-centric default; there is no dedicated multilingual configuration path
-today, this is a manual deployment-level choice.
+predominantly non-English, changing the pinned model in
+`src/modules/rag/embedding-provider.ts` to a multilingual one is a code change, not a
+setting — and requires re-indexing every project so stored vectors match the new
+model. There is no multilingual configuration path today.
 
 The `VectorStore` interface (`src/modules/rag/rag-types.ts`) and its in-memory
 `LocalKeywordVectorStore` are a currently-unused port kept for a future pluggable

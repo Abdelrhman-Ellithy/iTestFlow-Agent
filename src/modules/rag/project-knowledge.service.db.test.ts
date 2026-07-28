@@ -103,7 +103,7 @@ describeDb("source-versioned project knowledge publication", () => {
   }
 
   async function publish(draftId: string) {
-    return publishProjectKnowledgeDraft({ scope, actor: "user-1", draftId });
+    return publishProjectKnowledgeDraft({ scope, actor: "user-1", draftId, embeddingProvider: null });
   }
 
   beforeAll(async () => {
@@ -420,6 +420,7 @@ describeDb("source-versioned project knowledge publication", () => {
       adapter: fakeAzureAdapter({ fetchWorkItems }),
       workItemTypes: ["User Story"],
       states: ["Active"],
+    embeddingProvider: null,
     });
     const publication = await publish(draft.id);
 

@@ -2,8 +2,7 @@ import "server-only";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { sqlAll } from "@/modules/shared/infrastructure/database/db";
-import { type EmbeddingProvider } from "./embedding-provider";
-import { createWorkspaceEmbeddingProvider } from "./embedding-settings.service";
+import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
 import { searchProjectContextByEmbedding } from "./embedding-store.service";
 import { searchProjectContextByTrigram } from "./trigram-search";
 import { fuseByReciprocalRank } from "./hybrid-ranking";
@@ -33,8 +32,15 @@ export async function searchProjectChunksHybrid(input: {
   scope: ProjectScope;
   /** Pre-built via buildFtsQuery; callers already branch on an empty query before calling. */
   ftsQuery: string;
-  /** Original free text, used for semantic + trigram matching. */
+  /** Original free text as the user typed it — used for trigram matching. */
   rawQuery: string;
+  /**
+   * Text used for SEMANTIC matching, when it should differ from what the user typed.
+   * Conversational follow-ups need their prior turns folded in to mean anything;
+   * lexical signals must NOT get that treatment (see buildRetrievalQueryWithHistory).
+   * Defaults to rawQuery.
+   */
+  semanticQuery?: string;
   topK: number;
   maxChunksPerWorkItem?: number;
   /** undefined -> resolve the deployment-configured backend; null -> force semantic off (tests). */
@@ -79,16 +85,14 @@ export async function searchProjectChunksHybrid(input: {
   }
 
   const embeddingProvider =
-    input.embeddingProvider !== undefined
-      ? input.embeddingProvider
-      : await createWorkspaceEmbeddingProvider(scope.workspaceId);
+    input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
   let semanticRows: HybridChunkRow[] = [];
   if (embeddingProvider) {
     try {
       semanticRows = await searchProjectContextByEmbedding({
         scope,
         provider: embeddingProvider,
-        query: input.rawQuery,
+        query: input.semanticQuery ?? input.rawQuery,
         topK: input.topK,
         maxChunksPerWorkItem,
       });

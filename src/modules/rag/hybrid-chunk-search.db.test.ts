@@ -23,7 +23,7 @@ const scope: ProjectScope = {
 };
 
 function fakeEmbeddingProvider(embed: EmbeddingProvider["embed"]): EmbeddingProvider {
-  return { name: "ollama", model: "fake-model", vectorReference: "ollama:fake-model", embed };
+  return { name: "local", model: "fake-model", vectorReference: "ollama:fake-model", embed };
 }
 
 function checkoutItem(): Requirement {
@@ -55,6 +55,7 @@ async function sync(items: Requirement[]) {
     adapter: fakeAzureAdapter({ fetchWorkItems: vi.fn(async () => items) }),
     workItemTypes: ["User Story"],
     states: ["Active"],
+    embeddingProvider: null,
   });
 }
 

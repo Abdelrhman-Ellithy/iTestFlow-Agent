@@ -10,16 +10,10 @@ vi.mock("@/modules/workspace/workspace-request", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/modules/workspace/workspace-request")>();
   return { ...actual, resolveWorkspaceRequest: mocks.resolveWorkspaceRequest };
 });
-vi.mock("@/modules/workspace/workspace-settings.service", async (importOriginal) => {
-  // Keep the real constants (EMPTY_WORKSPACE_EMBEDDINGS_VIEW) so the route's
-  // no-row fallback stays in sync with the service's own view shape.
-  const actual = await importOriginal<typeof import("@/modules/workspace/workspace-settings.service")>();
-  return {
-    ...actual,
-    getWorkspaceSettings: mocks.getWorkspaceSettings,
-    upsertWorkspaceSettings: mocks.upsertWorkspaceSettings,
-  };
-});
+vi.mock("@/modules/workspace/workspace-settings.service", () => ({
+  getWorkspaceSettings: mocks.getWorkspaceSettings,
+  upsertWorkspaceSettings: mocks.upsertWorkspaceSettings,
+}));
 
 import { WorkspaceAccessError } from "@/modules/workspace/workspace-access.service";
 import { jsonRequest } from "@/test/factories";
@@ -72,52 +66,10 @@ describe("workspace settings routes", () => {
     );
   });
 
-  it("persists embeddings settings and normalizes blank optional fields to null", async () => {
-    const response = await PUT(jsonRequest("/api/workspace/settings", {
-      embeddings: { provider: "openai", model: "  ", baseUrl: null, apiKey: "sk-embed" },
-    }));
-    expect(response.status).toBe(200);
-    expect(mocks.upsertWorkspaceSettings).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workspaceId: "ws-1",
-        embeddings: expect.objectContaining({
-          provider: "openai",
-          // A whitespace-only model must clear the override, never be stored and
-          // later sent to the provider as a blank model name.
-          model: null,
-          baseUrl: null,
-          apiKey: "sk-embed",
-        }),
-      }),
-    );
-  });
-
-  it("omits the api key when untouched so the stored key survives a save", async () => {
-    await PUT(jsonRequest("/api/workspace/settings", { embeddings: { provider: "local" } }));
-    const call = mocks.upsertWorkspaceSettings.mock.calls[0]![0] as { embeddings: Record<string, unknown> };
-    expect(call.embeddings).not.toHaveProperty("apiKey");
-  });
-
-  it("never returns the stored embeddings api key, only whether one exists", async () => {
-    mocks.getWorkspaceSettings.mockResolvedValue({
-      retrievalTopK: null,
-      maxOutputTokenCap: null,
-      llmRetryAttempts: null,
-      manualBaselineMinutes: null,
-      reviewBaselineMinutes: null,
-      embeddings: { provider: "gemini", model: null, baseUrl: null, localDtype: null, hasApiKey: true },
-    });
-    const body = await (await GET()).json();
-    expect(body.settings.embeddings).toMatchObject({ provider: "gemini", hasApiKey: true });
-    expect(JSON.stringify(body)).not.toContain("apiKey");
-  });
-
   it.each([
     [{}, "Provide a setting to update."],
     [{ maxOutputTokenCap: 17000 }, "LLM output cap must be one of"],
     [{ retrievalTopK: 1000 }, "less than or equal to 25"],
-    [{ embeddings: { provider: "not-a-provider" } }, "Invalid enum value"],
-    [{ embeddings: { baseUrl: "not-a-url" } }, "Invalid url"],
   ])("rejects invalid settings without writing", async (body, message) => {
     const response = await PUT(jsonRequest("/api/workspace/settings", body));
     expect(response.status).toBe(400);

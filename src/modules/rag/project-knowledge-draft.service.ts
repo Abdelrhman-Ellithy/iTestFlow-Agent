@@ -47,7 +47,7 @@ import {
   runProjectKnowledgeLint,
   type ProjectKnowledgeCompilationMode,
 } from "./project-knowledge-compiled.service";
-import { createWorkspaceEmbeddingProvider } from "./embedding-settings.service";
+import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
 import { syncProjectKnowledgeEntryEmbeddings } from "./embedding-store.service";
 import {
   detectProjectKnowledgeHardConflicts,
@@ -627,6 +627,11 @@ export async function publishProjectKnowledgeDraft(input: {
   scope: ProjectScope;
   actor: string;
   draftId: string;
+  /**
+   * Seam for tests: undefined uses the built-in local model, null skips embedding
+   * entirely so a test never loads the ~131 MB ONNX weights.
+   */
+  embeddingProvider?: EmbeddingProvider | null;
 }) {
   const scope = assertProjectScope(input.scope);
   const result = await withTransaction(async (client) => {
@@ -879,7 +884,7 @@ export async function publishProjectKnowledgeDraft(input: {
   // missing or failing embedding backend must never fail or roll back the
   // published draft, it only means the Business Owner Assistant's knowledge
   // search stays lexical until the next successful publish.
-  const embeddingProvider = await createWorkspaceEmbeddingProvider(scope.workspaceId);
+  const embeddingProvider = input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
   if (embeddingProvider) {
     try {
       await syncProjectKnowledgeEntryEmbeddings({ scope, provider: embeddingProvider });

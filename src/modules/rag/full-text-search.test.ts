@@ -13,8 +13,9 @@ describe("buildFtsQuery", () => {
     // Output is bound as a parameter into to_tsquery('simple', ...): operator
     // characters must act as separators, never survive into a term, or Postgres
     // rejects the query with a tsquery syntax error.
+    // "how", "does" and "the" are dropped as stopwords — see the stopword note below.
     expect(buildFtsQuery('How does the "login" flow work? (auth & session:*) | !reset <-> retry')).toBe(
-      "how:* | does:* | the:* | login:* | flow:* | work:* | auth:* | session:* | reset:* | retry:* | signin:*",
+      "login:* | flow:* | work:* | auth:* | session:* | reset:* | retry:* | signin:*",
     );
   });
 
@@ -23,7 +24,24 @@ describe("buildFtsQuery", () => {
   });
 
   it("drops terms of 2 or fewer characters and joins survivors with OR", () => {
-    expect(buildFtsQuery("go to the app db ui")).toBe("the:* | app:*");
+    expect(buildFtsQuery("go to the app db ui")).toBe("app:*");
+  });
+
+  it("drops English function words that would otherwise match every chunk", () => {
+    // Terms are ORed, and the index uses to_tsvector('simple', ...) which does NOT
+    // strip stopwords — so a single "the:*" makes the query match the whole corpus
+    // and ts_rank_cd then orders by function-word density, i.e. noise. That noise is
+    // fed into reciprocal rank fusion as a peer of semantic/trigram results, where it
+    // can outvote a correct semantic match.
+    expect(buildFtsQuery("why was the card refused when I tried to buy")).toBe("card:* | refused:* | buy:*");
+    // Domain words that merely look unimportant are deliberately kept.
+    expect(buildFtsQuery("all new runs failed")).toBe("all:* | new:* | runs:* | failed:*");
+  });
+
+  it("keeps the original terms when a query is nothing but function words", () => {
+    // Returning an empty query would make callers skip search entirely; leaving the
+    // terms in place lets semantic and trigram still answer.
+    expect(buildFtsQuery("what are these")).toBe("what:* | are:* | these:*");
   });
 
   it("dedupes repeated terms and caps user terms at 16", () => {
@@ -101,7 +119,7 @@ let fakeProviderCounter = 0;
 
 function fakeProvider(embed: EmbeddingProvider["embed"]): EmbeddingProvider {
   fakeProviderCounter += 1;
-  return { name: "ollama", model: "fake-model", vectorReference: `ollama:fake-model-${fakeProviderCounter}`, embed };
+  return { name: "local", model: "fake-model", vectorReference: `ollama:fake-model-${fakeProviderCounter}`, embed };
 }
 
 function vectorLookupProvider() {

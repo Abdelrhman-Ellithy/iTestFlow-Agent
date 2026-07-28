@@ -12,11 +12,14 @@ import {
 import { canonicalizeProjectKnowledgeKey, getEntryProvenanceStatus } from "./project-knowledge-contracts";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 import { buildFtsQueryWithDynamicSynonyms } from "./full-text-search";
+import {
+  buildRetrievalQueryWithHistory,
+  type ContextChatbotHistoryMessage,
+} from "@/modules/context-chatbot/context-chatbot-history";
 import { searchProjectKnowledgeByTrigram } from "./trigram-search";
 import { fuseByReciprocalRank } from "./hybrid-ranking";
 import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
-import { type EmbeddingProvider } from "./embedding-provider";
-import { createWorkspaceEmbeddingProvider } from "./embedding-settings.service";
+import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
 import { searchProjectKnowledgeByEmbedding } from "./embedding-store.service";
 
 export type ContextChatbotContextEvidence = {
@@ -385,6 +388,16 @@ export async function retrieveContextChatbotEvidence(input: {
   knowledgeLimit?: number;
   maxContextChunksPerWorkItem?: number;
   selectedWorkItemIds?: string[];
+  /**
+   * Recent conversation, used ONLY to give a follow-up question enough meaning to
+   * retrieve on. Lexical search still uses the literal question.
+   */
+  history?: ContextChatbotHistoryMessage[];
+  /**
+   * Seam for tests: undefined uses the built-in local model, null skips semantic
+   * search entirely so a test never loads the ~131 MB ONNX weights.
+   */
+  embeddingProvider?: EmbeddingProvider | null;
 }): Promise<ContextChatbotEvidence> {
   const scope = assertProjectScope(input.scope);
   await ensureContextChatbotSearchIndexes({ scope });
@@ -392,11 +405,12 @@ export async function retrieveContextChatbotEvidence(input: {
   const knowledgeLimit = input.knowledgeLimit ?? 10;
   const maxContextChunksPerWorkItem = input.maxContextChunksPerWorkItem ?? 2;
 
-  // Resolved once and threaded into every consumer below. Resolution now reads the
-  // workspace's Settings override before falling back to the environment, so
-  // letting searchContext/searchKnowledge each re-resolve would mean three
-  // redundant settings reads per chat message.
-  const embeddingProvider = await createWorkspaceEmbeddingProvider(scope.workspaceId);
+  // Resolved once and threaded into every consumer below, so a caller (tests) can
+  // disable semantic search for the whole evidence pass with a single seam.
+  const embeddingProvider = input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
+  // Lexical search matches the literal question; semantic search gets the follow-up
+  // resolved against recent turns. See buildRetrievalQueryWithHistory for why they differ.
+  const semanticQuery = buildRetrievalQueryWithHistory(input.query, input.history);
   const ftsQuery = await buildFtsQueryWithDynamicSynonyms(input.query, embeddingProvider);
   const selectedWorkItemIds = Array.from(new Set(input.selectedWorkItemIds ?? []));
   if (!ftsQuery) {
@@ -411,7 +425,7 @@ export async function retrieveContextChatbotEvidence(input: {
     return { context: selected, knowledge: await getFallbackKnowledge({ scope, limit: knowledgeLimit }) };
   }
 
-  const knowledge = await searchKnowledge({ scope, ftsQuery, rawQuery: input.query, limit: knowledgeLimit, embeddingProvider });
+  const knowledge = await searchKnowledge({ scope, ftsQuery, rawQuery: input.query, semanticQuery, limit: knowledgeLimit, embeddingProvider });
   const trustedCompiled = knowledge.length > 0 && await hasTrustedCompiledKnowledge(scope);
   const selected = selectedWorkItemIds.length
     ? await loadSelectedContext({
@@ -425,6 +439,7 @@ export async function retrieveContextChatbotEvidence(input: {
     scope,
     ftsQuery,
     rawQuery: input.query,
+    semanticQuery,
     limit: contextLimit,
     maxChunksPerWorkItem: maxContextChunksPerWorkItem,
     embeddingProvider,
@@ -522,6 +537,7 @@ async function searchContext(input: {
   scope: ProjectScope;
   ftsQuery: string;
   rawQuery: string;
+  semanticQuery?: string;
   limit: number;
   maxChunksPerWorkItem?: number;
   embeddingProvider?: EmbeddingProvider | null;
@@ -534,6 +550,7 @@ async function searchContext(input: {
     scope: input.scope,
     ftsQuery: input.ftsQuery,
     rawQuery: input.rawQuery,
+    semanticQuery: input.semanticQuery,
     topK: input.limit,
     maxChunksPerWorkItem,
     embeddingProvider: input.embeddingProvider,
@@ -574,6 +591,7 @@ async function searchKnowledge(input: {
   scope: ProjectScope;
   ftsQuery: string;
   rawQuery: string;
+  semanticQuery?: string;
   limit: number;
   embeddingProvider?: EmbeddingProvider | null;
 }) {
@@ -613,16 +631,14 @@ async function searchKnowledge(input: {
   }
 
   const embeddingProvider =
-    input.embeddingProvider !== undefined
-      ? input.embeddingProvider
-      : await createWorkspaceEmbeddingProvider(input.scope.workspaceId);
+    input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
   let semanticRows: KnowledgeFtsRow[] = [];
   if (embeddingProvider) {
     try {
       semanticRows = await searchProjectKnowledgeByEmbedding({
         scope: input.scope,
         provider: embeddingProvider,
-        query: input.rawQuery,
+        query: input.semanticQuery ?? input.rawQuery,
         topK: input.limit,
       });
     } catch (error) {

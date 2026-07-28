@@ -30,7 +30,7 @@ const scope: ProjectScope = {
 
 function fakeEmbeddingProvider(model = "fake-model"): EmbeddingProvider {
   return {
-    name: "ollama",
+    name: "local",
     model,
     vectorReference: `ollama:${model}`,
     embed: async (texts) => texts.map(() => [1, 0, 0]),
@@ -161,6 +161,7 @@ describeDb("knowledge entry embeddings (DB-backed)", () => {
       adapter: fakeAzureAdapter({ fetchWorkItems: vi.fn(async () => [workItem]) }),
       workItemTypes: ["User Story"],
       states: ["Active"],
+    embeddingProvider: null,
     });
     await syncProjectChunkEmbeddings({ scope, provider });
 
@@ -177,7 +178,7 @@ describeDb("knowledge entry embeddings (DB-backed)", () => {
 
   it("ranks knowledge semantic search by cosine similarity and scopes to the vector reference", async () => {
     const provider: EmbeddingProvider = {
-      name: "ollama",
+      name: "local",
       model: "ranked-model",
       vectorReference: "ollama:ranked-model",
       embed: async (texts) => texts.map((text) => (text.toLowerCase().includes("checkout") ? [1, 0] : [0, 1])),

@@ -18,6 +18,7 @@
     "test:coverage:all": "vitest run --config vitest.coverage-all.config.ts --coverage",
     "test:coverage:integration": "node scripts/with-test-database.mjs node_modules/vitest/vitest.mjs run --config vitest.integration-coverage.config.ts --coverage",
     "coverage:inventory:update": "node scripts/update-coverage-inventory.mjs",
+    "test:model": "vitest run --config vitest.integration.config.ts src/modules/rag/embedding-model.quality.db.test.ts",
     "test:integration": "node scripts/with-test-database.mjs node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts",
     "db:migrate": "node-pg-migrate up",
     "db:migrate:test": "node scripts/with-test-database.mjs node_modules/node-pg-migrate/bin/node-pg-migrate.js up",

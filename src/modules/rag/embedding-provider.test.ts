@@ -1,227 +1,112 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const local = vi.hoisted(() => ({ embedWithLocalModel: vi.fn() }));
+vi.mock("./local-embedding", () => local);
 
 import {
   createEmbeddingProvider,
-  EMBEDDING_DEFAULT_MODELS,
-  getEmbeddingConfigFromEnv,
+  EMBEDDING_DTYPE,
+  EMBEDDING_MODEL,
+  EMBEDDING_VECTOR_REFERENCE,
+  MAX_EMBED_BATCH_SIZE,
 } from "./embedding-provider";
 
-function jsonResponse(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "Content-Type": "application/json" },
-  });
-}
+/**
+ * Unit coverage for the provider's own logic — prefixing, batching, truncation and
+ * validation — with the ONNX model mocked out. The real model's retrieval quality is
+ * proven separately in embedding-model.quality.db.test.ts, which is the only place
+ * the ~131 MB weights are actually loaded.
+ */
 
-function stubFetch(handler: (url: string, init: RequestInit) => Response | Promise<Response>) {
-  const mock = vi.fn(async (url: string | URL | Request, init?: RequestInit) =>
-    handler(String(url), init ?? {}),
+/** Returns one vector per input so the count assertion passes by default. */
+function respondWithOneVectorPerInput() {
+  local.embedWithLocalModel.mockImplementation(async ({ texts }: { texts: string[] }) =>
+    texts.map((_, index) => [index]),
   );
-  vi.stubGlobal("fetch", mock);
-  return mock;
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
-
-describe("getEmbeddingConfigFromEnv", () => {
-  it("defaults to the zero-setup local backend when unset", () => {
-    expect(getEmbeddingConfigFromEnv({})).toMatchObject({ provider: "local" });
-    expect(getEmbeddingConfigFromEnv({ EMBEDDINGS_PROVIDER: "" })).toMatchObject({ provider: "local" });
-  });
-
-  it("falls back to off for an explicit but unrecognized provider value", () => {
-    expect(getEmbeddingConfigFromEnv({ EMBEDDINGS_PROVIDER: "something-else" })).toEqual({
-      provider: "off",
-    });
-  });
-
-  it("disables semantic search when explicitly set to off", () => {
-    expect(getEmbeddingConfigFromEnv({ EMBEDDINGS_PROVIDER: "off" })).toEqual({ provider: "off" });
-  });
-
-  it("normalizes provider casing and trims values, dropping empties", () => {
-    expect(
-      getEmbeddingConfigFromEnv({
-        EMBEDDINGS_PROVIDER: " Ollama ",
-        EMBEDDINGS_MODEL: "  ",
-        EMBEDDINGS_BASE_URL: " http://127.0.0.1:11434 ",
-        EMBEDDINGS_API_KEY: "",
-      }),
-    ).toEqual({
-      provider: "ollama",
-      model: undefined,
-      baseUrl: "http://127.0.0.1:11434",
-      apiKey: undefined,
-      localDtype: undefined,
-    });
-  });
-
-  it("accepts the local provider and validates its dtype, ignoring unknown values", () => {
-    expect(
-      getEmbeddingConfigFromEnv({
-        EMBEDDINGS_PROVIDER: "local",
-        EMBEDDINGS_LOCAL_DTYPE: " FP32 ",
-      }),
-    ).toMatchObject({ provider: "local", localDtype: "fp32" });
-    expect(
-      getEmbeddingConfigFromEnv({
-        EMBEDDINGS_PROVIDER: "local",
-        EMBEDDINGS_LOCAL_DTYPE: "int9",
-      }),
-    ).toMatchObject({ provider: "local", localDtype: undefined });
-  });
+beforeEach(() => {
+  vi.clearAllMocks();
+  respondWithOneVectorPerInput();
 });
 
 describe("createEmbeddingProvider", () => {
-  it("returns null when off or when a required credential is missing", () => {
-    expect(createEmbeddingProvider({ provider: "off" })).toBeNull();
-    expect(createEmbeddingProvider({ provider: "gemini" })).toBeNull();
-    // Cloud OpenAI needs a key...
-    expect(createEmbeddingProvider({ provider: "openai" })).toBeNull();
-    // ...but an OpenAI-compatible local server does not.
-    expect(
-      createEmbeddingProvider({ provider: "openai", baseUrl: "http://127.0.0.1:1234/v1" }),
-    ).not.toBeNull();
-    // Fully local backends never need keys.
-    expect(createEmbeddingProvider({ provider: "ollama" })).not.toBeNull();
-    expect(createEmbeddingProvider({ provider: "local" })).not.toBeNull();
+  it("pins one model identity that doubles as the stored vector reference", () => {
+    const provider = createEmbeddingProvider();
+
+    expect(provider.name).toBe("local");
+    expect(provider.model).toBe(EMBEDDING_MODEL);
+    // The provider's reference identifies the MODEL (weights + precision). Each
+    // pipeline appends its own text-recipe version on top (see embedding-store), so a
+    // recipe change in one pipeline cannot invalidate the other's stored vectors.
+    expect(provider.vectorReference).toBe(`local:${EMBEDDING_MODEL}:${EMBEDDING_DTYPE}`);
+    expect(provider.vectorReference).toBe(EMBEDDING_VECTOR_REFERENCE);
   });
 
-  it("applies per-provider default models and records a stable vector reference", () => {
-    const provider = createEmbeddingProvider({ provider: "ollama" })!;
-    expect(provider.model).toBe(EMBEDDING_DEFAULT_MODELS.ollama);
-    expect(provider.vectorReference).toBe(`ollama:${EMBEDDING_DEFAULT_MODELS.ollama}`);
+  it("applies nomic retrieval task prefixes, defaulting to document", async () => {
+    const provider = createEmbeddingProvider();
 
-    const custom = createEmbeddingProvider({ provider: "ollama", model: "mxbai-embed-large" })!;
-    expect(custom.vectorReference).toBe("ollama:mxbai-embed-large");
-
-    // The in-process backend defaults to quantized weights, and the dtype is part
-    // of the vector identity because it changes the numeric output.
-    const local = createEmbeddingProvider({ provider: "local" })!;
-    expect(local.model).toBe(EMBEDDING_DEFAULT_MODELS.local);
-    expect(local.vectorReference).toBe(`local:${EMBEDDING_DEFAULT_MODELS.local}:q8`);
-    const fullPrecision = createEmbeddingProvider({ provider: "local", localDtype: "fp32" })!;
-    expect(fullPrecision.vectorReference).toBe(`local:${EMBEDDING_DEFAULT_MODELS.local}:fp32`);
-  });
-
-  it("calls the local Ollama embed endpoint with nomic task prefixes applied", async () => {
-    const vectorsByIndex = [[1, 0], [0, 1], [1, 1]];
-    const fetchMock = stubFetch(async (_url, init) => {
-      const body = JSON.parse(String(init.body)) as { input: string[] };
-      return jsonResponse({ embeddings: body.input.map((_, index) => vectorsByIndex[index]) });
-    });
-    const provider = createEmbeddingProvider({ provider: "ollama" })!;
-
-    await expect(provider.embed(["alpha", "beta"])).resolves.toEqual([[1, 0], [0, 1]]);
-
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("http://127.0.0.1:11434/api/embed");
-    // Default kind is "document"; the nomic model family needs task prefixes.
-    expect(JSON.parse(String(init!.body))).toEqual({
-      model: EMBEDDING_DEFAULT_MODELS.ollama,
-      input: ["search_document: alpha", "search_document: beta"],
-    });
-
-    await provider.embed(["find it"], "query");
-    const queryBody = JSON.parse(String(fetchMock.mock.calls[1]![1]!.body)) as { input: string[] };
-    expect(queryBody.input).toEqual(["search_query: find it"]);
-  });
-
-  it("does not prefix non-nomic models", async () => {
-    const fetchMock = stubFetch(() => jsonResponse({ embeddings: [[1]] }));
-    const provider = createEmbeddingProvider({ provider: "ollama", model: "mxbai-embed-large" })!;
     await provider.embed(["alpha"]);
-    const body = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body)) as { input: string[] };
-    expect(body.input).toEqual(["alpha"]);
-  });
-
-  it("calls OpenAI-compatible servers with a bearer header only when a key exists and reorders by index", async () => {
-    const fetchMock = stubFetch(() =>
-      jsonResponse({
-        data: [
-          { index: 1, embedding: [0, 1] },
-          { index: 0, embedding: [1, 0] },
-        ],
-      }),
-    );
-    const local = createEmbeddingProvider({ provider: "openai", baseUrl: "http://127.0.0.1:1234/v1/" })!;
-    await expect(local.embed(["alpha", "beta"])).resolves.toEqual([[1, 0], [0, 1]]);
-
-    const [localUrl, localInit] = fetchMock.mock.calls[0]!;
-    // Trailing base-URL slash is normalized away.
-    expect(localUrl).toBe("http://127.0.0.1:1234/v1/embeddings");
-    expect((localInit!.headers as Record<string, string>).Authorization).toBeUndefined();
-
-    const cloud = createEmbeddingProvider({ provider: "openai", apiKey: "sk-test" })!;
-    await cloud.embed(["alpha", "beta"]);
-    const [cloudUrl, cloudInit] = fetchMock.mock.calls[1]!;
-    expect(cloudUrl).toBe("https://api.openai.com/v1/embeddings");
-    expect((cloudInit!.headers as Record<string, string>).Authorization).toBe("Bearer sk-test");
-  });
-
-  it("calls Gemini batch embedding with retrieval task types and parses values", async () => {
-    const fetchMock = stubFetch(() =>
-      jsonResponse({ embeddings: [{ values: [0.5, 0.5] }] }),
-    );
-    const provider = createEmbeddingProvider({ provider: "gemini", apiKey: "g-key" })!;
-
-    await expect(provider.embed(["alpha"])).resolves.toEqual([[0.5, 0.5]]);
-
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe(
-      `https://generativelanguage.googleapis.com/v1beta/models/${EMBEDDING_DEFAULT_MODELS.gemini}:batchEmbedContents?key=g-key`,
-    );
-    expect(JSON.parse(String(init!.body))).toEqual({
-      requests: [
-        {
-          model: `models/${EMBEDDING_DEFAULT_MODELS.gemini}`,
-          content: { parts: [{ text: "alpha" }] },
-          taskType: "RETRIEVAL_DOCUMENT",
-        },
-      ],
-    });
+    expect(local.embedWithLocalModel.mock.calls[0]![0].texts).toEqual(["search_document: alpha"]);
 
     await provider.embed(["alpha"], "query");
-    const queryBody = JSON.parse(String(fetchMock.mock.calls[1]![1]!.body)) as {
-      requests: Array<{ taskType: string }>;
-    };
-    expect(queryBody.requests[0]!.taskType).toBe("RETRIEVAL_QUERY");
+    expect(local.embedWithLocalModel.mock.calls[1]![0].texts).toEqual(["search_query: alpha"]);
   });
 
-  it("splits large inputs into bounded batches and truncates oversized texts", async () => {
-    const fetchMock = stubFetch(async (_url, init) => {
-      const body = JSON.parse(String(init.body)) as { input: string[] };
-      return jsonResponse({ embeddings: body.input.map(() => [1]) });
-    });
-    const provider = createEmbeddingProvider({ provider: "ollama" })!;
+  it("passes the pinned model and dtype through to the runtime", async () => {
+    await createEmbeddingProvider().embed(["alpha"]);
 
-    const vectors = await provider.embed(
-      Array.from({ length: 70 }, (_, index) => (index === 0 ? "y".repeat(10000) : `text ${index}`)),
+    expect(local.embedWithLocalModel).toHaveBeenCalledWith(
+      expect.objectContaining({ model: EMBEDDING_MODEL, dtype: EMBEDDING_DTYPE }),
+    );
+  });
+
+  it("splits large inputs into bounded batches and preserves overall order", async () => {
+    const inputCount = MAX_EMBED_BATCH_SIZE * 2 + 5;
+    local.embedWithLocalModel.mockImplementation(async ({ texts }: { texts: string[] }) =>
+      texts.map((text) => [Number(text.replace("search_document: item", ""))]),
     );
 
-    expect(vectors).toHaveLength(70);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    const firstBatch = JSON.parse(String(fetchMock.mock.calls[0]![1]!.body)) as { input: string[] };
-    expect(firstBatch.input).toHaveLength(64);
-    // Truncation happens after prefixing, so the cap holds and the prefix survives.
-    expect(firstBatch.input[0]).toHaveLength(8000);
-    expect(firstBatch.input[0]!.startsWith("search_document: ")).toBe(true);
+    const vectors = await createEmbeddingProvider().embed(
+      Array.from({ length: inputCount }, (_, index) => `item${index}`),
+    );
 
-    await expect(provider.embed([])).resolves.toEqual([]);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(vectors).toHaveLength(inputCount);
+    expect(local.embedWithLocalModel).toHaveBeenCalledTimes(3);
+    expect(local.embedWithLocalModel.mock.calls[0]![0].texts).toHaveLength(MAX_EMBED_BATCH_SIZE);
+    expect(local.embedWithLocalModel.mock.calls[2]![0].texts).toHaveLength(5);
+    // Batching must not reorder: vector N still belongs to input N.
+    expect(vectors[0]).toEqual([0]);
+    expect(vectors[inputCount - 1]).toEqual([inputCount - 1]);
   });
 
-  it("throws on error statuses, malformed vectors, and count mismatches", async () => {
-    stubFetch(() => new Response("model not found", { status: 404 }));
-    const provider = createEmbeddingProvider({ provider: "ollama" })!;
-    await expect(provider.embed(["alpha"])).rejects.toThrow("model not found");
+  it("truncates oversized input after prefixing, so the prefix always survives", async () => {
+    await createEmbeddingProvider().embed(["y".repeat(20_000)], "query");
 
-    stubFetch(() => jsonResponse({ embeddings: [["not-a-number"]] }));
-    await expect(provider.embed(["alpha"])).rejects.toThrow("invalid vector");
+    const [sent] = local.embedWithLocalModel.mock.calls[0]![0].texts;
+    expect(sent).toHaveLength(8000);
+    expect(sent.startsWith("search_query: ")).toBe(true);
+  });
 
-    stubFetch(() => jsonResponse({ embeddings: [[1, 2]] }));
-    await expect(provider.embed(["alpha", "beta"])).rejects.toThrow("2 inputs");
+  it("returns an empty result without invoking the model", async () => {
+    await expect(createEmbeddingProvider().embed([])).resolves.toEqual([]);
+    expect(local.embedWithLocalModel).not.toHaveBeenCalled();
+  });
+
+  it("throws when the runtime returns the wrong number of vectors", async () => {
+    // Guards against a silent off-by-one that would misalign every vector with its
+    // chunk — the worst possible corruption, since retrieval would look healthy while
+    // returning content attributed to the wrong work item.
+    local.embedWithLocalModel.mockResolvedValue([[1]]);
+
+    await expect(createEmbeddingProvider().embed(["alpha", "beta"])).rejects.toThrow(
+      "returned 1 vectors for 2 inputs",
+    );
+  });
+
+  it("propagates a model failure so callers can degrade to lexical search", async () => {
+    local.embedWithLocalModel.mockRejectedValue(new Error("model download failed"));
+
+    await expect(createEmbeddingProvider().embed(["alpha"])).rejects.toThrow("model download failed");
   });
 });

@@ -115,6 +115,7 @@ async function sync(scope: ProjectScope, items: Requirement[]) {
     adapter: fakeAzureAdapter({ fetchWorkItems: vi.fn(async () => items) }),
     workItemTypes: ["User Story"],
     states: ["Active"],
+    embeddingProvider: null,
   });
 }
 
@@ -206,6 +207,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       adapter: fakeAzureAdapter({ fetchWorkItems }),
       workItemTypes: ["User Story"],
       states: ["Active"],
+    embeddingProvider: null,
     });
 
     // The adapter is queried with the scope's Azure project, never a raw client value.
@@ -354,6 +356,32 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       { projectId: PROJ_A },
     );
     expect(chunk?.content).toContain("approves the card");
+  });
+
+  it("keeps items active when the fetch hit its limit and may be truncated", async () => {
+    // Regression for the highest-impact retrieval defect found in this codebase: with a
+    // capped fetch ordered most-recently-changed first, every previously indexed item
+    // outside the window was marked inactive on each sync — and all retrieval filters on
+    // sync_status='active'. On a real 1,085-item project that left 885 items (82%)
+    // indexed but permanently unsearchable.
+    //
+    // A truncated fetch cannot distinguish "left scope" from "beyond the window", so it
+    // must not retire anything. Here limit=1 returns 1 item, so the other two must stay
+    // active despite being absent from the results.
+    const result = await indexAzureWorkItemsAsProjectContext({
+      scope: scopeA,
+      actor: "db-test",
+      adapter: fakeAzureAdapter({ fetchWorkItems: vi.fn(async () => [checkoutItem()]) }),
+      workItemTypes: ["User Story"],
+      states: ["Active"],
+      limit: 1,
+      embeddingProvider: null,
+    });
+
+    expect(result).toMatchObject({ inactiveCount: 0 });
+    const rows = await workItemRows(PROJ_A);
+    expect(rows.filter((row) => row.sync_status === "active").map((row) => row.azure_work_item_id).sort())
+      .toEqual(["101", "102", "103"]);
   });
 
   it("items missing from the batch flip to inactive; the active set is exactly the survivors", async () => {
@@ -534,6 +562,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       workItemTypes: ["User Story"],
       states: ["Active"],
       mode: "rebuild",
+    embeddingProvider: null,
     });
 
     expect(result).toMatchObject({ mode: "rebuild", fetchedCount: 2, createdCount: 2 });
