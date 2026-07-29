@@ -24,11 +24,39 @@ import { estimateTokens } from "./evidence-budget";
 export const RECENT_EXCHANGES_ALWAYS_KEPT = 3;
 
 /**
- * Upper bound on how far back relevance scoring reaches. Bounds both cost (each
- * candidate is embedded) and the risk of dragging a long-abandoned topic back into a
- * conversation that has moved on.
+ * Upper bound on how far back relevance scoring reaches. Bounds both cost and the risk
+ * of dragging a long-abandoned topic back into a conversation that has moved on.
  */
 export const MAX_SCORED_EXCHANGES = 20;
+
+/**
+ * How many candidates survive the free lexical prefilter and get embedded.
+ *
+ * Embedding is the expensive step: measured at ~12 ms per exchange, scoring 20
+ * candidates cost ~250 ms per message — 87% of all embedding work in a chat turn, for
+ * a supporting feature. Word overlap is a good enough first pass to discard exchanges
+ * about visibly unrelated topics, so only the plausible few are embedded, which is
+ * where paraphrase matching ("roles" vs "personas" vs "actors") actually earns its
+ * keep.
+ */
+export const MAX_EMBEDDED_EXCHANGES = 6;
+
+/** Cheap topical overlap: shared content words, normalised by the question's length. */
+function lexicalOverlap(question: string, text: string): number {
+  const words = (value: string) =>
+    new Set(
+      value
+        .toLowerCase()
+        .split(/[^\p{L}\p{N}]+/u)
+        .filter((word) => word.length > 3),
+    );
+  const questionWords = words(question);
+  if (!questionWords.size) return 0;
+  const textWords = words(text);
+  let shared = 0;
+  for (const word of questionWords) if (textWords.has(word)) shared += 1;
+  return shared / questionWords.size;
+}
 
 /**
  * A user turn together with the assistant turn(s) that answered it.
@@ -96,9 +124,16 @@ export async function selectRelevantHistory(input: {
   }
 
   if (older.length && input.scoreExchanges) {
-    // Only the most recent slice of the backlog is scored; older than that, relevance
-    // is rarely worth the cost of computing it.
-    const candidates = older.slice(-MAX_SCORED_EXCHANGES);
+    // Two-stage. Only the most recent slice of the backlog is considered at all —
+    // older than that, relevance is rarely worth computing. That slice then gets a
+    // free lexical pass, and only the survivors are embedded.
+    const recentBacklog = older.slice(-MAX_SCORED_EXCHANGES);
+    const candidates = recentBacklog.length > MAX_EMBEDDED_EXCHANGES
+      ? [...recentBacklog]
+          .sort((first, second) =>
+            lexicalOverlap(input.question, second.text) - lexicalOverlap(input.question, first.text))
+          .slice(0, MAX_EMBEDDED_EXCHANGES)
+      : recentBacklog;
     let scores: number[] = [];
     try {
       scores = await input.scoreExchanges({ question: input.question, exchanges: candidates });

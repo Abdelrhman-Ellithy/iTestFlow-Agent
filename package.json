@@ -28,6 +28,7 @@
     "db:reset:test": "node scripts/with-test-database.mjs node_modules/node-pg-migrate/bin/node-pg-migrate.js down 999999 && node scripts/with-test-database.mjs node_modules/node-pg-migrate/bin/node-pg-migrate.js up",
     "worker": "node --conditions=react-server --import tsx src/worker/main.ts",
     "worker:dev": "node --env-file=.env --conditions=react-server --watch --import tsx src/worker/main.ts",
+    "context:repair": "node --env-file=.env --conditions=react-server --import tsx src/scripts/repair-context-index.ts",
     "org:enable": "node --env-file=.env --conditions=react-server --import tsx src/scripts/manage-org.ts enable",
     "org:disable": "node --env-file=.env --conditions=react-server --import tsx src/scripts/manage-org.ts disable"
   },

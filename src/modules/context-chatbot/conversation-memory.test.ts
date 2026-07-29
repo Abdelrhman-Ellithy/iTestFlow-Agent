@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   groupIntoExchanges,
+  MAX_EMBEDDED_EXCHANGES,
   RECENT_EXCHANGES_ALWAYS_KEPT,
   selectRelevantHistory,
 } from "./conversation-memory";
@@ -126,6 +127,29 @@ describe("selectRelevantHistory", () => {
       scoreExchanges: async () => { throw new Error("model unavailable"); },
     });
     expect(result).toHaveLength(RECENT_EXCHANGES_ALWAYS_KEPT * 2);
+  });
+
+  it("embeds only a bounded number of candidates, not the whole backlog", async () => {
+    // Embedding is ~12 ms per exchange; scoring the full 20-candidate backlog cost
+    // ~250 ms per message, 87% of a turn's embedding work. A free word-overlap pass
+    // picks the plausible few first so the expensive step stays bounded.
+    const history = [
+      ...Array.from({ length: 18 }, (_, i) => [user(`unrelated topic ${i}`), assistant("a")]).flat(),
+      user("ECMS roles question"), assistant("about ECMS roles"),
+      ...Array.from({ length: 3 }, (_, i) => [user(`recent ${i}`), assistant("a")]).flat(),
+    ];
+    const scorer = vi.fn(async ({ exchanges }: { exchanges: Array<{ text: string }> }) =>
+      exchanges.map((exchange) => (exchange.text.includes("ECMS") ? 1 : 0)),
+    );
+
+    const result = await selectRelevantHistory({
+      history, question: "which roles belong to ECMS?", budgetTokens: 5_000, scoreExchanges: scorer,
+    });
+
+    expect(scorer).toHaveBeenCalledTimes(1);
+    expect(scorer.mock.calls[0]![0].exchanges.length).toBeLessThanOrEqual(MAX_EMBEDDED_EXCHANGES);
+    // The prefilter must still surface the one that matters, not just cut blindly.
+    expect(result.map((m) => m.content)).toContain("ECMS roles question");
   });
 
   it("handles an empty conversation", async () => {

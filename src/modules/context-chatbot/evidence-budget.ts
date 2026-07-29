@@ -1,3 +1,11 @@
+import {
+  estimateTokens,
+  FALLBACK_MAX_INPUT_TOKENS,
+  usableInputTokens,
+} from "@/modules/llm/token-estimate";
+
+export { estimateTokens, FALLBACK_MAX_INPUT_TOKENS };
+
 /**
  * Chooses how much retrieved evidence to put in the prompt, by token budget rather
  * than by a fixed item count.
@@ -16,22 +24,6 @@
  * computable. Fill it.
  */
 
-/**
- * Chars-per-token approximation, matching the convention already used by the
- * knowledge-extraction batcher. Deliberately crude: a real tokenizer would have to
- * match whichever provider the user configured, and being wrong in the safe direction
- * costs nothing here because the budget carries its own margin below.
- */
-const CHARS_PER_TOKEN = 4;
-
-/**
- * Fraction of the model's input limit this may spend. The remainder absorbs the
- * approximation above, provider-side prompt wrapping, and tokenizer differences.
- */
-const BUDGET_SAFETY_FRACTION = 0.9;
-
-/** Applied when the configured model's input limit is unknown. */
-export const FALLBACK_MAX_INPUT_TOKENS = 16_000;
 
 /**
  * Floors, so a long conversation or an unusually large system prompt can never
@@ -49,10 +41,6 @@ const MIN_KNOWLEDGE_ITEMS = 3;
  * a starting preference, not a reservation.
  */
 const KNOWLEDGE_BUDGET_SHARE = 0.5;
-
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
-}
 
 export type BudgetedEvidence<TContext, TKnowledge> = {
   context: TContext[];
@@ -86,10 +74,7 @@ export function selectEvidenceWithinBudget<TContext, TKnowledge>(input: {
 }): BudgetedEvidence<TContext, TKnowledge> {
   const maxInputTokens = normalizePositiveInt(input.maxInputTokens) ?? FALLBACK_MAX_INPUT_TOKENS;
   const fixedCostTokens = estimateTokens(input.fixedPromptText);
-  const evidenceBudgetTokens = Math.max(
-    0,
-    Math.floor(maxInputTokens * BUDGET_SAFETY_FRACTION) - fixedCostTokens,
-  );
+  const evidenceBudgetTokens = Math.max(0, usableInputTokens(maxInputTokens) - fixedCostTokens);
 
   const knowledge = fill(
     input.knowledge,

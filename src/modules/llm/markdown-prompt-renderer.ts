@@ -1,5 +1,7 @@
 import "server-only";
 
+import { estimateTokens, usableInputTokens } from "./token-estimate";
+
 import type { NormalizedTestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import type { ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema";
 import type { LlmContextSource } from "@/modules/rag/project-context-store.service";
@@ -19,19 +21,29 @@ type MarkdownPromptInput = {
   projectKnowledgeNotice?: string | null;
   extraInstructions?: string;
   outputContract: unknown;
+  /** The caller's configured model window; sizes how much context is included. */
+  maxInputTokens?: number;
+  /** The workspace's retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
 };
 
 export function buildRequirementAnalysisMarkdownPrompt(input: MarkdownPromptInput) {
+  const relatedWorkItems = selectRelatedWorkItemsWithinBudget({
+    relatedWorkItems: input.relatedWorkItems ?? [],
+    floor: input.relatedWorkItemsFloor ?? DEFAULT_RELATED_ITEMS_FLOOR,
+    maxInputTokens: input.maxInputTokens,
+  });
   const relevantKnowledge = selectRelevantProjectKnowledge({
+    maxInputTokens: input.maxInputTokens,
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
       stringifyForPromptSearch(input.targetRequirement),
-      stringifyForPromptSearch(input.relatedWorkItems ?? []),
+      stringifyForPromptSearch(relatedWorkItems),
       stringifyForPromptSearch(input.selectedContext ?? []),
     ].join("\n"),
     prioritySourceIds: [
       extractWorkItemId(input.targetRequirement),
-      ...extractWorkItemIds(input.relatedWorkItems ?? []),
+      ...extractWorkItemIds(relatedWorkItems),
       ...extractWorkItemIds(input.selectedContext ?? []),
     ].filter(Boolean) as string[],
   });
@@ -40,7 +52,7 @@ export function buildRequirementAnalysisMarkdownPrompt(input: MarkdownPromptInpu
     prompt: [
       renderCurrentProject(input.currentProject),
       renderTargetWorkItem("User Story Under Analysis", input.targetRequirement),
-      renderWorkItemCollection("Related Work Items", input.relatedWorkItems ?? []),
+      renderWorkItemCollection("Related Work Items", relatedWorkItems),
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
       renderProjectKnowledgeAuthorityNotice(input.projectKnowledgeNotice),
       renderProjectKnowledge(relevantKnowledge),
@@ -54,17 +66,23 @@ export function buildRequirementAnalysisMarkdownPrompt(input: MarkdownPromptInpu
 }
 
 export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput & { options?: Record<string, unknown> | NormalizedTestDesignOptions }) {
+  const relatedWorkItems = selectRelatedWorkItemsWithinBudget({
+    relatedWorkItems: input.relatedWorkItems ?? [],
+    floor: input.relatedWorkItemsFloor ?? DEFAULT_RELATED_ITEMS_FLOOR,
+    maxInputTokens: input.maxInputTokens,
+  });
   const relevantKnowledge = selectRelevantProjectKnowledge({
+    maxInputTokens: input.maxInputTokens,
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
       stringifyForPromptSearch(input.targetRequirement),
-      stringifyForPromptSearch(input.relatedWorkItems ?? []),
+      stringifyForPromptSearch(relatedWorkItems),
       stringifyForPromptSearch(input.selectedContext ?? []),
       stringifyForPromptSearch(input.options ?? {}),
     ].join("\n"),
     prioritySourceIds: [
       extractWorkItemId(input.targetRequirement),
-      ...extractWorkItemIds(input.relatedWorkItems ?? []),
+      ...extractWorkItemIds(relatedWorkItems),
       ...extractWorkItemIds(input.selectedContext ?? []),
     ].filter(Boolean) as string[],
   });
@@ -73,7 +91,7 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
     prompt: [
       renderCurrentProject(input.currentProject),
       renderTargetWorkItem("User Story Under Test", input.targetRequirement),
-      renderWorkItemCollection("Related Work Items", input.relatedWorkItems ?? []),
+      renderWorkItemCollection("Related Work Items", relatedWorkItems),
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
       renderTestDesignOptions(input.options ?? {}),
       renderCoverageExpectations(),
@@ -89,17 +107,23 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
 }
 
 export function buildExistingTestCaseReviewMarkdownPrompt(input: MarkdownPromptInput & { linkedTestCases?: unknown[] }) {
+  const relatedWorkItems = selectRelatedWorkItemsWithinBudget({
+    relatedWorkItems: input.relatedWorkItems ?? [],
+    floor: input.relatedWorkItemsFloor ?? DEFAULT_RELATED_ITEMS_FLOOR,
+    maxInputTokens: input.maxInputTokens,
+  });
   const relevantKnowledge = selectRelevantProjectKnowledge({
+    maxInputTokens: input.maxInputTokens,
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
       stringifyForPromptSearch(input.targetRequirement),
       stringifyForPromptSearch(input.linkedTestCases ?? []),
-      stringifyForPromptSearch(input.relatedWorkItems ?? []),
+      stringifyForPromptSearch(relatedWorkItems),
       stringifyForPromptSearch(input.selectedContext ?? []),
     ].join("\n"),
     prioritySourceIds: [
       extractWorkItemId(input.targetRequirement),
-      ...extractWorkItemIds(input.relatedWorkItems ?? []),
+      ...extractWorkItemIds(relatedWorkItems),
       ...extractWorkItemIds(input.selectedContext ?? []),
     ].filter(Boolean) as string[],
   });
@@ -128,18 +152,24 @@ export function buildTestExecutionEffortMarkdownPrompt(
     options?: Record<string, unknown>;
   },
 ) {
+  const relatedWorkItems = selectRelatedWorkItemsWithinBudget({
+    relatedWorkItems: input.relatedWorkItems ?? [],
+    floor: input.relatedWorkItemsFloor ?? DEFAULT_RELATED_ITEMS_FLOOR,
+    maxInputTokens: input.maxInputTokens,
+  });
   const relevantKnowledge = selectRelevantProjectKnowledge({
+    maxInputTokens: input.maxInputTokens,
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
       stringifyForPromptSearch(input.targetRequirement),
       stringifyForPromptSearch(input.linkedTestCases ?? []),
-      stringifyForPromptSearch(input.relatedWorkItems ?? []),
+      stringifyForPromptSearch(relatedWorkItems),
       stringifyForPromptSearch(input.selectedContext ?? []),
       stringifyForPromptSearch(input.options ?? {}),
     ].join("\n"),
     prioritySourceIds: [
       extractWorkItemId(input.targetRequirement),
-      ...extractWorkItemIds(input.relatedWorkItems ?? []),
+      ...extractWorkItemIds(relatedWorkItems),
       ...extractWorkItemIds(input.selectedContext ?? []),
     ].filter(Boolean) as string[],
   });
@@ -175,13 +205,32 @@ export function extractWorkItemId(value: unknown) {
   return typeof id === "string" || typeof id === "number" ? String(id) : undefined;
 }
 
-const DOMAIN_BRIEF_LIMITS = {
-  modules: 6,
-  businessRules: 14,
-  stateTransitions: 6,
-  glossary: 14,
-  crossDependencies: 6,
+/**
+ * Floor per knowledge category, so every category is represented even on a small
+ * model. These are minimums, not caps — the token budget decides how far past them to
+ * go. They were previously hard caps (6/14/6/14/6), which on a real 213-entry project
+ * meant workflows saw 22% of the compiled knowledge regardless of the model's window:
+ * 14 of 114 business rules reached test design, and business rules ARE the test
+ * conditions.
+ */
+const DOMAIN_BRIEF_FLOORS = {
+  modules: 4,
+  businessRules: 6,
+  stateTransitions: 4,
+  glossary: 6,
+  crossDependencies: 2,
 } as const;
+
+/**
+ * Share of the model's usable window that compiled knowledge may occupy in a workflow
+ * prompt. The rest is the work item under analysis, related items, selected context,
+ * the output contract, and room for the response.
+ */
+const KNOWLEDGE_BUDGET_SHARE = 0.35;
+/** Share available to related work items, over and above the caller's top-K floor. */
+const RELATED_ITEMS_BUDGET_SHARE = 0.25;
+/** Used when the caller does not supply the workspace top-K. */
+const DEFAULT_RELATED_ITEMS_FLOOR = 8;
 
 function renderCurrentProject(project: CurrentProjectPromptInput) {
   return [
@@ -683,52 +732,106 @@ function testStepsValue(value: unknown) {
   });
 }
 
+/**
+ * Ranks each knowledge category by relevance, then fills a token budget round-robin
+ * across categories.
+ *
+ * Round-robin rather than per-category quotas: it guarantees every category is
+ * represented (rank 1 of each before rank 2 of any), and small categories simply
+ * exhaust, handing their remaining share to the large ones. No arbitrary split to tune.
+ */
 function selectRelevantProjectKnowledge(input: {
   projectKnowledgeBase: unknown | null | undefined;
   queryText: string;
   prioritySourceIds: string[];
+  /** From the caller's configured model; falls back conservatively when unknown. */
+  maxInputTokens?: number;
 }): ProjectKnowledgeBase | null {
   const knowledgeBase = normalizeProjectKnowledge(input.projectKnowledgeBase);
   if (!knowledgeBase) return null;
 
   const queryTerms = tokenizeForPromptSearch(input.queryText);
   const prioritySourceIds = new Set(input.prioritySourceIds);
+  // Preserves TItem: rankKnowledgeItems is generic, but inference through a local
+  // alias widens to its constraint unless the parameter is re-declared here.
+  const rank = <TItem extends { sourceWorkItemIds?: string[] }>(
+    items: TItem[],
+    describe: (item: TItem) => string,
+  ): TItem[] => rankKnowledgeItems(items, queryTerms, prioritySourceIds, describe);
+
+  const ranked = {
+    modules: rank(knowledgeBase.modules, (item) =>
+      [item.id, item.name, item.description, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
+    ),
+    businessRules: rank(knowledgeBase.businessRules, (item) =>
+      [item.id, item.rule, item.moduleName, item.sourceField, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
+    ),
+    stateTransitions: rank(knowledgeBase.stateTransitions, (item) =>
+      [item.id, item.workflowName, item.fromState, item.toState, item.triggerOrCondition, item.actor, item.moduleName, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
+    ),
+    glossary: rank(knowledgeBase.glossary, (item) =>
+      [item.term, item.type, item.definition, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
+    ),
+    crossDependencies: rank(knowledgeBase.crossDependencies, (item) =>
+      [item.id, item.sourceModule, item.targetModule, item.dependencyType, item.description, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
+    ),
+  };
+
+  const budgetTokens = Math.floor(usableInputTokens(input.maxInputTokens) * KNOWLEDGE_BUDGET_SHARE);
+  const taken = {
+    modules: 0, businessRules: 0, stateTransitions: 0, glossary: 0, crossDependencies: 0,
+  } as Record<keyof typeof ranked, number>;
+  const categories = Object.keys(ranked) as Array<keyof typeof ranked>;
+
+  let usedTokens = 0;
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const category of categories) {
+      const next = ranked[category][taken[category]];
+      if (next === undefined) continue;
+      const cost = estimateTokens(JSON.stringify(next));
+      // Below its floor a category is taken regardless of budget, so every category is
+      // represented even when the window is small.
+      const belowFloor = taken[category] < DOMAIN_BRIEF_FLOORS[category];
+      if (!belowFloor && usedTokens + cost > budgetTokens) continue;
+      taken[category] += 1;
+      usedTokens += cost;
+      progressed = true;
+    }
+  }
 
   return {
-    modules: rankKnowledgeItems(knowledgeBase.modules, queryTerms, prioritySourceIds, (item) =>
-      [item.id, item.name, item.description, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
-    ).slice(0, DOMAIN_BRIEF_LIMITS.modules),
-    businessRules: rankKnowledgeItems(knowledgeBase.businessRules, queryTerms, prioritySourceIds, (item) =>
-      [item.id, item.rule, item.moduleName, item.sourceField, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
-    ).slice(0, DOMAIN_BRIEF_LIMITS.businessRules),
-    stateTransitions: rankKnowledgeItems(knowledgeBase.stateTransitions, queryTerms, prioritySourceIds, (item) =>
-      [
-        item.id,
-        item.workflowName,
-        item.fromState,
-        item.toState,
-        item.triggerOrCondition,
-        item.actor,
-        item.moduleName,
-        item.evidence,
-        item.sourceWorkItemIds.join(" "),
-      ].join(" "),
-    ).slice(0, DOMAIN_BRIEF_LIMITS.stateTransitions),
-    glossary: rankKnowledgeItems(knowledgeBase.glossary, queryTerms, prioritySourceIds, (item) =>
-      [item.term, item.type, item.definition, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
-    ).slice(0, DOMAIN_BRIEF_LIMITS.glossary),
-    crossDependencies: rankKnowledgeItems(knowledgeBase.crossDependencies, queryTerms, prioritySourceIds, (item) =>
-      [
-        item.id,
-        item.sourceModule,
-        item.targetModule,
-        item.dependencyType,
-        item.description,
-        item.evidence,
-        item.sourceWorkItemIds.join(" "),
-      ].join(" "),
-    ).slice(0, DOMAIN_BRIEF_LIMITS.crossDependencies),
+    modules: ranked.modules.slice(0, taken.modules),
+    businessRules: ranked.businessRules.slice(0, taken.businessRules),
+    stateTransitions: ranked.stateTransitions.slice(0, taken.stateTransitions),
+    glossary: ranked.glossary.slice(0, taken.glossary),
+    crossDependencies: ranked.crossDependencies.slice(0, taken.crossDependencies),
   };
+}
+
+/**
+ * Trims related work items to what fits, keeping at least the caller's top-K.
+ *
+ * top-K is a deliberate user setting (Settings -> Knowledge & Context), so it is
+ * honoured as a floor rather than replaced: the budget only ever adds items the
+ * window can afford.
+ */
+function selectRelatedWorkItemsWithinBudget(input: {
+  relatedWorkItems: unknown[];
+  floor: number;
+  maxInputTokens?: number;
+}): unknown[] {
+  const budgetTokens = Math.floor(usableInputTokens(input.maxInputTokens) * RELATED_ITEMS_BUDGET_SHARE);
+  const selected: unknown[] = [];
+  let usedTokens = 0;
+  for (const item of input.relatedWorkItems) {
+    const cost = estimateTokens(JSON.stringify(item));
+    if (selected.length >= input.floor && usedTokens + cost > budgetTokens) break;
+    selected.push(item);
+    usedTokens += cost;
+  }
+  return selected;
 }
 
 function normalizeProjectKnowledge(value: unknown): ProjectKnowledgeBase | null {
