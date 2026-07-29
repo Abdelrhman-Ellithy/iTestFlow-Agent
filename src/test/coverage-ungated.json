@@ -145,6 +145,7 @@
     "src/modules/rag/context-chatbot-retrieval.service.ts",
     "src/modules/rag/embedding-store.service.ts",
     "src/modules/rag/hybrid-chunk-search.ts",
+    "src/modules/rag/knowledge-relevance.service.ts",
     "src/modules/rag/local-embedding.ts",
     "src/modules/rag/project-context-schema.service.ts",
     "src/modules/rag/project-context-store.service.ts",

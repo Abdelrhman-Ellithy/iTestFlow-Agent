@@ -798,22 +798,22 @@ function selectRelevantProjectKnowledge(input: {
     describe: (item: TItem) => string,
   ): TItem[] => rankKnowledgeItems(items, queryTerms, prioritySourceIds, describe);
 
-  // A semantic ordering, when the caller supplied one, replaces keyword ranking —
-  // which matters only once the corpus outgrows the budget and ranking starts deciding
-  // inclusion rather than order. Entries the override does not mention keep their
-  // keyword rank behind those it does, so an incomplete override never loses content.
+  // The semantic override is the eligible set for its category, in relevance order —
+  // not a reordering of everything. It arrives already cut at a relevance threshold, so
+  // admitting the entries it left out would put back exactly the material the threshold
+  // exists to remove: a category with nothing to say about this work item still has a
+  // best entry, and sending it reads as though it were relevant. A category the
+  // override omits entirely keeps keyword ranking.
   const applyOverride = <TItem extends { sourceWorkItemIds?: string[] }>(
     items: TItem[],
     keyOf: (item: TItem) => string,
-    order: string[] | undefined,
+    eligible: string[] | undefined,
   ): TItem[] => {
-    if (!order?.length) return items;
-    const position = new Map(order.map((key, index) => [key, index]));
-    return [...items].sort((first, second) => {
-      const a = position.get(keyOf(first)) ?? Number.MAX_SAFE_INTEGER;
-      const b = position.get(keyOf(second)) ?? Number.MAX_SAFE_INTEGER;
-      return a - b;
-    });
+    if (!eligible) return items;
+    const position = new Map(eligible.map((key, index) => [key, index]));
+    return items
+      .filter((item) => position.has(keyOf(item)))
+      .sort((first, second) => position.get(keyOf(first))! - position.get(keyOf(second))!);
   };
 
   const ranked = {

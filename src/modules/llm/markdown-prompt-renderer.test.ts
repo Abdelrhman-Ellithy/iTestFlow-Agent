@@ -487,21 +487,28 @@ describe("compiled knowledge selection at corpus scale", () => {
     expect(result.prompt).toContain("Checkout");
   });
 
-  it("honours a semantic ranking override over keyword order", () => {
-    // Entries the override does not name keep their keyword order behind those it does,
-    // so a partial override reorders without dropping anything.
-    const override = { modules: ["mod-57", "mod-58", "mod-59"] };
+  it("treats a semantic ranking override as the eligible set, not just an ordering", () => {
+    // The override arrives already cut at a relevance threshold. Admitting the entries
+    // it left out would put back exactly what the threshold removed: a category always
+    // has a best entry, even when it has nothing to do with the work item.
+    const override = { modules: ["mod-57", "mod-58"], crossDependencies: [] };
     const selection = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
-      projectKnowledgeBase: knowledge, maxInputTokens: 16_000, rankedKnowledgeKeys: override,
-    });
-    const withoutOverride = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
-      projectKnowledgeBase: knowledge, maxInputTokens: 16_000,
+      projectKnowledgeBase: knowledge, maxInputTokens: 200_000, rankedKnowledgeKeys: override,
     });
 
-    expect(selection.moduleIds.slice(0, 3)).toEqual(["mod-57", "mod-58", "mod-59"]);
-    expect(withoutOverride.moduleIds).not.toContain("mod-57");
-    // Ordering only: the override changes which entries survive the budget, never how
-    // many.
-    expect(selection.modules).toBe(withoutOverride.modules);
+    expect(selection.moduleIds).toEqual(["mod-57", "mod-58"]);
+    expect(selection.crossDependencies).toBe(0);
+    // Categories the override does not mention keep keyword ranking.
+    expect(selection.glossary).toBeGreaterThan(0);
+    expect(selection.businessRules).toBeGreaterThan(0);
+  });
+
+  it("falls back to keyword ranking for every category when no override is supplied", () => {
+    const selection = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
+      projectKnowledgeBase: knowledge, maxInputTokens: 200_000,
+    });
+
+    expect(selection.modules).toBe(knowledge.modules.length);
+    expect(selection.crossDependencies).toBe(knowledge.crossDependencies.length);
   });
 });

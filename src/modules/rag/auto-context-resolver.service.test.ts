@@ -234,6 +234,9 @@ describe("resolveWorkflowContext (LLM selection path)", () => {
       relatedWorkItems: [],
       contextUsed: [],
       retrievalTopK: 8,
+      // Semantic knowledge ranking is unavailable here, and unavailable means prompts
+      // fall back to keyword ranking rather than the caller seeing a failure.
+      rankedKnowledgeKeys: null,
     });
     expect(suggestContextStoriesMock).not.toHaveBeenCalled();
     expect(provider.generateStructuredOutput).not.toHaveBeenCalled();
