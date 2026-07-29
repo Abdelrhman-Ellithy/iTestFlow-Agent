@@ -7,7 +7,7 @@ import {
   workflowTypeValues,
   type WorkflowType,
 } from "@/modules/analytics/analytics-config";
-import { nowIso, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { nowIso, sqlGet } from "@/modules/shared/infrastructure/database/db";
 
 /**
  * Per-workspace overrides for retrieval breadth (top-K), the LLM max output token
@@ -23,14 +23,18 @@ export type WorkspaceSettingsView = {
   retrievalTopK: number | null;
   maxOutputTokenCap: number | null;
   llmRetryAttempts: number | null;
+  externalLlmEnabled: boolean;
   manualBaselineMinutes: WorkflowBaselineMap | null;
   reviewBaselineMinutes: WorkflowBaselineMap | null;
 };
+
+export const DEFAULT_EXTERNAL_LLM_ENABLED = true;
 
 type WorkspaceSettingsRow = {
   retrieval_top_k: number | null;
   max_output_token_cap: number | null;
   llm_retry_attempts: number | null;
+  external_llm_enabled: boolean | null;
   manual_baseline_minutes: unknown;
   review_baseline_minutes: unknown;
 };
@@ -64,6 +68,9 @@ function toView(row: WorkspaceSettingsRow): WorkspaceSettingsView {
     retrievalTopK: row.retrieval_top_k,
     maxOutputTokenCap: row.max_output_token_cap,
     llmRetryAttempts: row.llm_retry_attempts,
+    // The migration is NOT NULL, but only an explicit false should disable
+    // External LLM if a malformed legacy row is encountered.
+    externalLlmEnabled: row.external_llm_enabled !== false,
     manualBaselineMinutes: parseBaselineMap(row.manual_baseline_minutes),
     reviewBaselineMinutes: parseBaselineMap(row.review_baseline_minutes),
   };
@@ -71,7 +78,7 @@ function toView(row: WorkspaceSettingsRow): WorkspaceSettingsView {
 
 export async function getWorkspaceSettings(workspaceId: string): Promise<WorkspaceSettingsView | null> {
   const row = await sqlGet<WorkspaceSettingsRow>(
-    `SELECT retrieval_top_k, max_output_token_cap, llm_retry_attempts,
+    `SELECT retrieval_top_k, max_output_token_cap, llm_retry_attempts, external_llm_enabled,
             manual_baseline_minutes, review_baseline_minutes
        FROM workspace_settings
       WHERE workspace_id = @workspaceId
@@ -86,65 +93,71 @@ export async function upsertWorkspaceSettings(input: {
   retrievalTopK?: number | null;
   maxOutputTokenCap?: number | null;
   llmRetryAttempts?: number | null;
+  externalLlmEnabled?: boolean;
   manualBaselineMinutes?: WorkflowBaselineMap | null;
   reviewBaselineMinutes?: WorkflowBaselineMap | null;
   updatedByUserId: string | null;
 }): Promise<WorkspaceSettingsView> {
   const now = nowIso();
-  // Partial update: an omitted field (undefined) keeps the current value; an
-  // explicit null clears the override (inherit the default). Read-modify-write so
-  // settings split across UI tabs don't clobber each other.
-  const existing = await getWorkspaceSettings(input.workspaceId);
-  const retrievalTopK = input.retrievalTopK !== undefined ? input.retrievalTopK : existing?.retrievalTopK ?? null;
-  const maxOutputTokenCap =
-    input.maxOutputTokenCap !== undefined ? input.maxOutputTokenCap : existing?.maxOutputTokenCap ?? null;
-  const llmRetryAttempts =
-    input.llmRetryAttempts !== undefined ? input.llmRetryAttempts : existing?.llmRetryAttempts ?? null;
-  const manualBaselineMinutes =
-    input.manualBaselineMinutes !== undefined ? input.manualBaselineMinutes : existing?.manualBaselineMinutes ?? null;
-  const reviewBaselineMinutes =
-    input.reviewBaselineMinutes !== undefined ? input.reviewBaselineMinutes : existing?.reviewBaselineMinutes ?? null;
-  // Nullable params are ::int / ::text / ::jsonb cast so Postgres can infer the
-  // column type when the value is NULL (a bare named param has no inferable type).
-  await sqlRun(
-    `INSERT INTO workspace_settings
-       (workspace_id, retrieval_top_k, max_output_token_cap, llm_retry_attempts,
-        manual_baseline_minutes, review_baseline_minutes,
-        updated_by_user_id, created_at, updated_at)
-     VALUES
-       (@workspaceId, @retrievalTopK::int, @maxOutputTokenCap::int, @llmRetryAttempts::int,
-        @manualBaselineMinutes::jsonb, @reviewBaselineMinutes::jsonb,
-        @updatedByUserId::text, @now, @now)
+  // Omitted fields are absent from the INSERT and conflict UPDATE lists; an
+  // explicit null remains a written value for nullable settings.
+  const columns = ["workspace_id", "updated_by_user_id", "created_at", "updated_at"];
+  const values = ["@workspaceId", "@updatedByUserId::text", "@now", "@now"];
+  const updates = ["updated_by_user_id = excluded.updated_by_user_id", "updated_at = excluded.updated_at"];
+  const params: Record<string, unknown> = {
+    workspaceId: input.workspaceId,
+    updatedByUserId: input.updatedByUserId,
+    now,
+  };
+
+  function addField(column: string, parameter: string, cast: string, value: unknown) {
+    columns.push(column);
+    values.push(`@${parameter}${cast}`);
+    updates.unshift(`${column} = excluded.${column}`);
+    params[parameter] = value;
+  }
+
+  if (input.retrievalTopK !== undefined) {
+    addField("retrieval_top_k", "retrievalTopK", "::int", input.retrievalTopK);
+  }
+  if (input.maxOutputTokenCap !== undefined) {
+    addField("max_output_token_cap", "maxOutputTokenCap", "::int", input.maxOutputTokenCap);
+  }
+  if (input.llmRetryAttempts !== undefined) {
+    addField("llm_retry_attempts", "llmRetryAttempts", "::int", input.llmRetryAttempts);
+  }
+  // When omitted on a newly-created row, the database default remains true.
+  if (input.externalLlmEnabled !== undefined) {
+    addField("external_llm_enabled", "externalLlmEnabled", "::boolean", input.externalLlmEnabled);
+  }
+  if (input.manualBaselineMinutes !== undefined) {
+    addField(
+      "manual_baseline_minutes",
+      "manualBaselineMinutes",
+      "::jsonb",
+      input.manualBaselineMinutes === null ? null : JSON.stringify(input.manualBaselineMinutes),
+    );
+  }
+  if (input.reviewBaselineMinutes !== undefined) {
+    addField(
+      "review_baseline_minutes",
+      "reviewBaselineMinutes",
+      "::jsonb",
+      input.reviewBaselineMinutes === null ? null : JSON.stringify(input.reviewBaselineMinutes),
+    );
+  }
+  const row = await sqlGet<WorkspaceSettingsRow>(
+    `INSERT INTO workspace_settings (${columns.join(", ")})
+     VALUES (${values.join(", ")})
      ON CONFLICT (workspace_id) DO UPDATE SET
-       retrieval_top_k         = excluded.retrieval_top_k,
-       max_output_token_cap    = excluded.max_output_token_cap,
-       llm_retry_attempts      = excluded.llm_retry_attempts,
-       manual_baseline_minutes = excluded.manual_baseline_minutes,
-       review_baseline_minutes = excluded.review_baseline_minutes,
-       updated_by_user_id      = excluded.updated_by_user_id,
-       updated_at              = excluded.updated_at`,
-    {
-      workspaceId: input.workspaceId,
-      retrievalTopK,
-      maxOutputTokenCap,
-      llmRetryAttempts,
-      manualBaselineMinutes: manualBaselineMinutes ? JSON.stringify(manualBaselineMinutes) : null,
-      reviewBaselineMinutes: reviewBaselineMinutes ? JSON.stringify(reviewBaselineMinutes) : null,
-      updatedByUserId: input.updatedByUserId,
-      now,
-    },
+       ${updates.join(",\n       ")}
+     RETURNING retrieval_top_k, max_output_token_cap, llm_retry_attempts, external_llm_enabled,
+               manual_baseline_minutes, review_baseline_minutes`,
+    params,
   );
-  const view = await getWorkspaceSettings(input.workspaceId);
-  // Just upserted — always present; fall back to the resolved shape defensively.
-  return (
-    view ?? {
-      retrievalTopK,
-      maxOutputTokenCap,
-      llmRetryAttempts,
-      manualBaselineMinutes,
-      reviewBaselineMinutes,
-    }
-  );
+  // INSERT ... RETURNING and ON CONFLICT ... DO UPDATE ... RETURNING both return exactly one row.
+  if (!row) throw new Error("Workspace settings upsert did not return a row.");
+  return toView(row);
 }
 
 /**

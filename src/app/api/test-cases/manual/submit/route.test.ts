@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   requireWorkflowContext: vi.fn(),
+  requireExternalLlmEnabled: vi.fn(),
   resolveProjectScope: vi.fn(),
   completeManualTestCaseGeneration: vi.fn(),
   startWorkflowRun: vi.fn(),
@@ -11,7 +12,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/modules/credentials/scoped-resolution.service")>();
-  return { ...actual, requireWorkflowContext: mocks.requireWorkflowContext };
+  return {
+    ...actual,
+    requireWorkflowContext: mocks.requireWorkflowContext,
+    requireExternalLlmEnabled: mocks.requireExternalLlmEnabled,
+  };
 });
 vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
@@ -49,6 +54,7 @@ describe("POST /api/test-cases/manual/submit", () => {
       userId: "user-1",
       workspace: { id: "ws-1" },
     });
+    mocks.requireExternalLlmEnabled.mockResolvedValue(undefined);
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
     mocks.startWorkflowRun.mockReturnValue("run-1");
     mocks.completeManualTestCaseGeneration.mockReturnValue({
@@ -141,6 +147,20 @@ describe("POST /api/test-cases/manual/submit", () => {
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ error: "Project access denied." });
     expect(mocks.startWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it("short-circuits disabled External LLM workflows before scope resolution or analytics", async () => {
+    mocks.requireExternalLlmEnabled.mockRejectedValue(
+      new WorkflowAuthError("External LLM is disabled by a workspace owner or admin.", 403),
+    );
+
+    const response = await POST(submitRequest());
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toEqual({ error: "External LLM is disabled by a workspace owner or admin." });
+    expect(mocks.resolveProjectScope).not.toHaveBeenCalled();
+    expect(mocks.startWorkflowRun).not.toHaveBeenCalled();
+    expect(mocks.completeManualTestCaseGeneration).not.toHaveBeenCalled();
   });
 
   it("fails the started run and maps invalid pasted output to a 422", async () => {

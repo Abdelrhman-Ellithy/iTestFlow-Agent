@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { authErrorResponse, requireWorkflowContext, requireWorkflowRole } from "@/modules/credentials/scoped-resolution.service";
+import {
+  authErrorResponse,
+  requireExternalLlmEnabled,
+  requireWorkflowContext,
+  requireWorkflowRole,
+} from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { finalizeManualProjectKnowledge } from "@/modules/rag/project-knowledge-actions.service";
@@ -21,6 +26,7 @@ export async function POST(request: Request) {
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can build project knowledge.");
+    await requireExternalLlmEnabled(ctx);
     const scope = await resolveProjectScope(ctx, parsed.data.scope);
     const result = await finalizeManualProjectKnowledge({
       scope,

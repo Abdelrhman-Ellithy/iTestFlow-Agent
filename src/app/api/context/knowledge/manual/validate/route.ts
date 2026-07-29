@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
   authErrorResponse,
+  requireExternalLlmEnabled,
   requireWorkflowContext,
   requireWorkflowRole,
 } from "@/modules/credentials/scoped-resolution.service";
@@ -31,6 +32,7 @@ export async function POST(request: Request) {
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can build project knowledge.");
+    await requireExternalLlmEnabled(ctx);
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const knowledgeBase = await validateProjectKnowledgeManualBatch({
         scope: trustedScope,

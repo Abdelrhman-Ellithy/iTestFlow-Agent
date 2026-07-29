@@ -14,6 +14,7 @@ import {
   Field,
   SecretField,
   SectionCard,
+  SettingCheckbox,
   StatusBadge,
   defaultBaseUrlPlaceholder,
   type Provider,
@@ -270,18 +271,53 @@ function AiProviderCard() {
 }
 
 type WorkspaceSettingsResponse = {
-  settings: { retrievalTopK: number | null; maxOutputTokenCap: number | null; llmRetryAttempts: number | null }
+  workspaceId?: string
+  settings: {
+    retrievalTopK: number | null
+    maxOutputTokenCap: number | null
+    llmRetryAttempts: number | null
+    externalLlmEnabled?: boolean
+  }
   defaults: { maxOutputTokenCapDefault: number; maxOutputTokenCapOptions: number[]; retryAttemptsDefault: number; retryAttemptsOptions: number[] }
 }
 
-/** Owner/admin workspace LLM output ceiling + retry config. Shows a notice for members. */
+type WorkspaceAiControls = {
+  maxOutputTokenCap: string
+  llmRetryAttempts: number
+  externalLlmEnabled: boolean
+}
+
+function workspaceAiControlsFromResponse(data: WorkspaceSettingsResponse): WorkspaceAiControls {
+  const options = data.defaults.maxOutputTokenCapOptions ?? [16000, 32000, 64000]
+  return {
+    maxOutputTokenCap:
+      data.settings.maxOutputTokenCap != null
+        ? String(data.settings.maxOutputTokenCap)
+        : String(data.defaults.maxOutputTokenCapDefault ?? options[0] ?? 32000),
+    llmRetryAttempts: data.settings.llmRetryAttempts ?? data.defaults.retryAttemptsDefault ?? 1,
+    externalLlmEnabled: data.settings.externalLlmEnabled ?? true,
+  }
+}
+
+/** Owner/admin workspace AI controls. Shows a notice for members. */
 function OutputCapCard() {
   const [forbidden, setForbidden] = useState(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [value, setValue] = useState<string>("")
   const [retryAttempts, setRetryAttempts] = useState<number>(1)
+  const [externalLlmEnabled, setExternalLlmEnabled] = useState(true)
+  const [baseline, setBaseline] = useState<WorkspaceAiControls | null>(null)
   const [defaults, setDefaults] = useState<WorkspaceSettingsResponse["defaults"] | null>(null)
+
+  const applyWorkspaceSettings = useCallback((data: WorkspaceSettingsResponse) => {
+    const next = workspaceAiControlsFromResponse(data)
+    setDefaults(data.defaults)
+    setValue(next.maxOutputTokenCap)
+    setRetryAttempts(next.llmRetryAttempts)
+    setExternalLlmEnabled(next.externalLlmEnabled)
+    setBaseline(next)
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -296,39 +332,52 @@ function OutputCapCard() {
         return
       }
       const data = (await response.json()) as WorkspaceSettingsResponse
-      setDefaults(data.defaults)
-      const options = data.defaults.maxOutputTokenCapOptions ?? [16000, 32000, 64000]
-      setValue(
-        data.settings.maxOutputTokenCap != null
-          ? String(data.settings.maxOutputTokenCap)
-          : String(data.defaults.maxOutputTokenCapDefault ?? options[0] ?? 32000),
-      )
-      setRetryAttempts(data.settings.llmRetryAttempts ?? data.defaults.retryAttemptsDefault ?? 1)
+      applyWorkspaceSettings(data)
     } catch {
       toast.error("Could not load the LLM output limit.")
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [applyWorkspaceSettings])
 
   useEffect(() => {
     void load()
   }, [load])
 
   async function onSave() {
+    if (!baseline) return
+
+    const changes: {
+      maxOutputTokenCap?: number
+      llmRetryAttempts?: number
+      externalLlmEnabled?: boolean
+    } = {}
+    if (value !== baseline.maxOutputTokenCap) changes.maxOutputTokenCap = Number(value)
+    if (retryAttempts !== baseline.llmRetryAttempts) changes.llmRetryAttempts = retryAttempts
+    if (externalLlmEnabled !== baseline.externalLlmEnabled) changes.externalLlmEnabled = externalLlmEnabled
+
+    if (Object.keys(changes).length === 0) {
+      toast.info("No workspace AI control changes to save.")
+      return
+    }
+
     setSaving(true)
     try {
       const response = await fetch("/api/workspace/settings", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ maxOutputTokenCap: Number(value), llmRetryAttempts: retryAttempts }),
+        body: JSON.stringify(changes),
       })
-      const data = (await response.json().catch(() => ({}))) as { error?: string }
+      const data = (await response.json().catch(() => ({}))) as WorkspaceSettingsResponse & { error?: string }
       if (!response.ok) {
-        toast.error(apiErrorMessage(data, "Could not save the LLM output limit."))
+        toast.error(apiErrorMessage(data, "Could not save workspace AI controls."))
         return
       }
-      toast.success("LLM output limit saved.")
+      applyWorkspaceSettings(data)
+      if (changes.externalLlmEnabled !== undefined) {
+        window.dispatchEvent(new CustomEvent("itestflow:workspace-capabilities-changed", { detail: { workspaceId: data.workspaceId } }))
+      }
+      toast.success("Workspace AI controls saved.")
     } finally {
       setSaving(false)
     }
@@ -340,13 +389,21 @@ function OutputCapCard() {
 
   return (
     <SectionCard
-      title="Advanced — LLM output limit"
-      description="Workspace-wide ceiling on the tokens the model may generate per request. Shared by everyone in this workspace."
+      title="Workspace AI controls"
+      description="Workspace-wide generation controls shared by everyone in this workspace."
     >
       {forbidden ? (
         <OwnerOnlyNotice />
       ) : (
         <div className="space-y-4">
+          <SettingCheckbox
+            id="external-llm-enabled"
+            label="Allow External LLM"
+            description="Lets members prepare structured prompts and validate pasted External LLM responses. Auto Generate and saved provider credentials are unaffected."
+            checked={externalLlmEnabled}
+            onCheckedChange={setExternalLlmEnabled}
+            disabled={loading || saving}
+          />
           <Field label="Max output tokens" description="Limits how many tokens the model can generate in a single response (output only — does not affect input context size). Lower values reduce cost; higher values allow longer outputs.">
             <div className="flex flex-wrap items-center gap-2">
               {options.map((option) => (
@@ -381,7 +438,7 @@ function OutputCapCard() {
               ))}
             </div>
           </Field>
-          <Button type="button" onClick={() => void onSave()} disabled={saving || loading}>
+          <Button type="button" onClick={() => void onSave()} disabled={saving || loading || !baseline}>
             {saving ? (
               <>
                 <Loader2 className="size-4 motion-safe:animate-spin" aria-hidden="true" />

@@ -1,9 +1,11 @@
 "use client"
 
+import { useId } from "react"
 import { Info, Sparkles, SquareTerminal, type LucideIcon } from "lucide-react"
 
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import type { ExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability"
 
 export type GenerationMode = "auto" | "manual"
 
@@ -20,6 +22,7 @@ export function GenerationModeToggle({
   autoIcon: AutoIcon = Sparkles,
   manualIcon: ManualIcon = SquareTerminal,
   ariaLabel = "LLM execution mode",
+  externalLlmAvailability,
   className,
 }: {
   mode: GenerationMode
@@ -29,60 +32,74 @@ export function GenerationModeToggle({
   autoIcon?: LucideIcon
   manualIcon?: LucideIcon
   ariaLabel?: string
+  externalLlmAvailability: ExternalLlmAvailability
   className?: string
 }) {
+  const manualDisabled = !externalLlmAvailability.enabled
+  const selectedMode = manualDisabled && mode === "manual" ? "auto" : mode
+  const manualDescriptionId = useId()
   const itemClass = (value: GenerationMode) =>
     cn(
-      "inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition",
-      mode === value
+      "inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent disabled:hover:text-muted-foreground",
+      selectedMode === value
         ? "bg-primary text-primary-foreground"
         : "text-muted-foreground hover:bg-muted hover:text-foreground",
     )
 
   return (
     <TooltipProvider>
-      <div className={cn("inline-flex items-center gap-2", className)}>
-        <div
-          role="tablist"
-          aria-label={ariaLabel}
-          className="inline-flex rounded-lg border border-input bg-background p-1"
-        >
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === "auto"}
-            className={itemClass("auto")}
-            onClick={() => onChange("auto")}
+      <div className={cn("inline-flex flex-col items-start gap-2", className)}>
+        <div className="inline-flex items-center gap-2">
+          <div
+            role="tablist"
+            aria-label={ariaLabel}
+            className="inline-flex rounded-lg border border-input bg-background p-1"
           >
-            <AutoIcon className="size-4 shrink-0" aria-hidden="true" />
-            {autoLabel}
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === "manual"}
-            className={itemClass("manual")}
-            onClick={() => onChange("manual")}
-          >
-            <ManualIcon className="size-4 shrink-0" aria-hidden="true" />
-            {manualLabel}
-          </button>
-        </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
             <button
               type="button"
-              aria-label="About generation modes"
-              className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              role="tab"
+              aria-selected={selectedMode === "auto"}
+              className={itemClass("auto")}
+              onClick={() => onChange("auto")}
             >
-              <Info className="size-4" aria-hidden="true" />
+              <AutoIcon className="size-4 shrink-0" aria-hidden="true" />
+              {autoLabel}
             </button>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" sideOffset={6} className="block max-w-sm space-y-1.5">
-            <p><span className="font-semibold">Auto Generate:</span> Generate directly using the configured LLM provider.</p>
-            <p><span className="font-semibold">External LLM:</span> Prepare a structured prompt to copy into an external LLM.</p>
-          </TooltipContent>
-        </Tooltip>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={selectedMode === "manual"}
+              className={itemClass("manual")}
+              onClick={() => onChange("manual")}
+              disabled={manualDisabled}
+              aria-describedby={manualDisabled ? manualDescriptionId : undefined}
+              title={manualDisabled ? externalLlmAvailability.message : undefined}
+            >
+              <ManualIcon className="size-4 shrink-0" aria-hidden="true" />
+              {manualLabel}
+            </button>
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="About generation modes"
+                className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <Info className="size-4" aria-hidden="true" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={6} className="block max-w-sm space-y-1.5">
+              <p><span className="font-semibold">Auto Generate:</span> Generate directly using the configured LLM provider.</p>
+              <p><span className="font-semibold">External LLM:</span> Prepare a structured prompt to copy into an external LLM.</p>
+            </TooltipContent>
+          </Tooltip>
+        </div>
+        {manualDisabled ? (
+          <p id={manualDescriptionId} role="status" className="text-xs text-muted-foreground">
+            {externalLlmAvailability.message}
+          </p>
+        ) : null}
       </div>
     </TooltipProvider>
   )

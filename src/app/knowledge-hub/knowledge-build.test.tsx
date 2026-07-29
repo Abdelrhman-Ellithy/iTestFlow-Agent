@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({ postJson: vi.fn() }));
@@ -112,6 +112,7 @@ afterEach(() => {
   cleanup();
   window.localStorage.clear();
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
 });
 
 beforeEach(() => {
@@ -119,10 +120,20 @@ beforeEach(() => {
     configurable: true,
     value: vi.fn(),
   });
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    if (String(input).includes("/api/workspace/capabilities")) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({ workspaceId: "workspace-1", externalLlmEnabled: true }),
+      });
+    }
+    return Promise.reject(new Error(`Unexpected fetch: ${String(input)}`));
+  }));
 });
 
 describe("Project Knowledge conflict review", () => {
-  it("requires the project index before starting automatic or external builds", () => {
+  it("requires the project index before starting automatic or external builds", async () => {
     const { rerender } = render(
       <KnowledgeBuild
         scope={scope}
@@ -138,6 +149,7 @@ describe("Project Knowledge conflict review", () => {
     expect(screen.getByRole("group", { name: /Load Project Index, step 1 of 4, current step/ })).toBeTruthy();
     expect(screen.getByRole("group", { name: /Generate Knowledge Draft, step 2 of 4, locked/ })).toBeTruthy();
 
+    await waitFor(() => expect(screen.getByRole("tab", { name: "External LLM" })).not.toBeDisabled());
     fireEvent.click(screen.getByRole("tab", { name: "External LLM" }));
     expect(screen.getByRole("button", { name: "Prepare prompt" })).toBeDisabled();
     expect(screen.getByText("Load the project index above before preparing an external prompt.")).toBeTruthy();
@@ -153,6 +165,177 @@ describe("Project Knowledge conflict review", () => {
     expect(screen.getByRole("button", { name: "Prepare prompt" })).not.toBeDisabled();
     expect(screen.getByRole("group", { name: /Load Project Index, step 1 of 4, completed/ })).toBeTruthy();
     expect(screen.getByRole("group", { name: /Generate Knowledge Draft, step 2 of 4, current step/ })).toBeTruthy();
+  });
+
+  it("falls back to automatic mode and ignores a manual draft that resolves after External LLM is disabled", async () => {
+    let resolveDraft: ((draft: {
+      draftId: string
+      mode: "incremental"
+      batchCount: number
+      batches: Array<{ batchIndex: number; batchCount: number; workItemCount: number; prompt: string }>
+    }) => void) | undefined;
+    const draftPromise = new Promise<{
+      draftId: string
+      mode: "incremental"
+      batchCount: number
+      batches: Array<{ batchIndex: number; batchCount: number; workItemCount: number; prompt: string }>
+    }>((resolve) => {
+      resolveDraft = resolve;
+    });
+    let externalLlmEnabled = true;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes("/api/workspace/capabilities")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ workspaceId: "workspace-1", externalLlmEnabled }),
+        });
+      }
+      if (String(input) === "/api/context/knowledge/manual/draft") {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ draft: null }) });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${String(input)}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    api.postJson.mockImplementation((url: string) => {
+      if (url === "/api/context/knowledge/manual/draft") return draftPromise;
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    await waitFor(() => expect(screen.getByRole("tab", { name: "External LLM" })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("tab", { name: "External LLM" }));
+    fireEvent.click(screen.getByRole("button", { name: "Prepare prompt" }));
+    await waitFor(() => expect(api.postJson).toHaveBeenCalledWith(
+      "/api/context/knowledge/manual/draft",
+      expect.objectContaining({ scope }),
+    ));
+
+    externalLlmEnabled = false;
+    act(() => {
+      window.dispatchEvent(new CustomEvent("itestflow:workspace-capabilities-changed", {
+        detail: { workspaceId: "workspace-1" },
+      }));
+    });
+    await waitFor(() => expect(screen.getByRole("tab", { name: "External LLM" })).toBeDisabled());
+    expect(screen.getByRole("tab", { name: "Auto Generate" })).toHaveAttribute("aria-selected", "true");
+
+    await act(async () => {
+      resolveDraft?.({
+        draftId: "manual-draft-1",
+        mode: "incremental",
+        batchCount: 1,
+        batches: [{ batchIndex: 1, batchCount: 1, workItemCount: 1, prompt: "Draft prompt" }],
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole("button", { name: "Validate batch" })).toBeNull();
+  });
+
+  it("resumes persisted external prompts after a reload and starts at the first unvalidated batch", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/api/workspace/capabilities")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ workspaceId: "workspace-1", externalLlmEnabled: true }),
+        });
+      }
+      if (String(input) === "/api/context/knowledge/manual/draft") {
+        expect(JSON.parse(String(init?.body))).toEqual({ scope, resumeLatest: true });
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            draft: {
+              draftId: "saved-manual-draft",
+              mode: "incremental",
+              batchCount: 2,
+              batches: [
+                { batchIndex: 1, batchCount: 2, prompt: "Persisted prompt one" },
+                { batchIndex: 2, batchCount: 2, prompt: "Persisted prompt two" },
+              ],
+              validatedBatchIndexes: [1],
+            },
+          }),
+        });
+      }
+      return Promise.reject(new Error(`Unexpected fetch: ${String(input)}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    await waitFor(() => expect(screen.getByRole("tab", { name: "External LLM" })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("tab", { name: "External LLM" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Resume external draft" })).toBeTruthy());
+    expect(screen.getByText("Saved external LLM draft available")).toBeTruthy();
+    expect(screen.getByText(/1 of 2 batches are already validated/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume external draft" }));
+
+    await waitFor(() => expect(screen.getByText("Batch 2 of 2")).toBeTruthy());
+    expect(screen.getByText("1 validated")).toBeTruthy();
+    expect(screen.getByLabelText("External LLM prompt")).toHaveValue("Persisted prompt two");
+    expect(screen.getByLabelText("External LLM response")).toHaveValue("");
+    expect(screen.queryByRole("button", { name: "Resume external draft" })).toBeNull();
+  });
+
+  it("ignores a saved-draft discovery response that resolves after External LLM is disabled", async () => {
+    let resolveResume: ((response: { ok: boolean; status: number; json: () => Promise<unknown> }) => void) | undefined;
+    const resumePromise = new Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>((resolve) => {
+      resolveResume = resolve;
+    });
+    let externalLlmEnabled = true;
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes("/api/workspace/capabilities")) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ workspaceId: "workspace-1", externalLlmEnabled }),
+        });
+      }
+      if (String(input) === "/api/context/knowledge/manual/draft") return resumePromise;
+      return Promise.reject(new Error(`Unexpected fetch: ${String(input)}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
+    await waitFor(() => expect(screen.getByRole("tab", { name: "External LLM" })).not.toBeDisabled());
+    fireEvent.click(screen.getByRole("tab", { name: "External LLM" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/context/knowledge/manual/draft",
+      expect.objectContaining({ method: "POST" }),
+    ));
+
+    externalLlmEnabled = false;
+    act(() => {
+      window.dispatchEvent(new CustomEvent("itestflow:workspace-capabilities-changed", {
+        detail: { workspaceId: "workspace-1" },
+      }));
+    });
+    await waitFor(() => expect(screen.getByRole("tab", { name: "External LLM" })).toBeDisabled());
+
+    await act(async () => {
+      resolveResume?.({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          draft: {
+            draftId: "saved-manual-draft",
+            mode: "incremental",
+            batchCount: 1,
+            batches: [{ batchIndex: 1, batchCount: 1, prompt: "Stale saved prompt" }],
+            validatedBatchIndexes: [],
+          },
+        }),
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole("button", { name: "Resume external draft" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Validate batch" })).toBeNull();
   });
 
   it("restores Incremental and Full recompile controls and queues the selected mode", async () => {
@@ -573,16 +756,17 @@ describe("Project Knowledge conflict review", () => {
   it("clears the saved build job only on a confirmed 404", async () => {
     const storageKey = "itestflow.project-knowledge-job.workspace-1.project-1";
     window.localStorage.setItem(storageKey, "job-gone");
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 404,
-      json: async () => ({ error: "The knowledge build was not found." }),
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes("/api/workspace/capabilities")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ workspaceId: "workspace-1", externalLlmEnabled: true }) });
+      }
+      return Promise.resolve({ ok: false, status: 404, json: async () => ({ error: "The knowledge build was not found." }) });
     });
     vi.stubGlobal("fetch", fetchMock);
     try {
       render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
       await waitFor(() => expect(window.localStorage.getItem(storageKey)).toBeNull());
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls.filter(([input]) => !String(input).includes("/api/workspace/capabilities"))).toHaveLength(1);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -603,19 +787,27 @@ describe("Project Knowledge conflict review", () => {
       error: null,
       createdAt: new Date().toISOString(),
     };
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({ error: "Transient failure." }) })
-      .mockResolvedValue({ ok: true, status: 200, json: async () => ({ job: runningJob }) });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes("/api/workspace/capabilities")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ workspaceId: "workspace-1", externalLlmEnabled: true }) });
+      }
+      const jobRequests = fetchMock.mock.calls.filter(([request]) => !String(request).includes("/api/workspace/capabilities")).length;
+      return Promise.resolve(
+        jobRequests === 1
+          ? { ok: false, status: 500, json: async () => ({ error: "Transient failure." }) }
+          : { ok: true, status: 200, json: async () => ({ job: runningJob }) },
+      );
+    });
     vi.stubGlobal("fetch", fetchMock);
     try {
       render(<KnowledgeBuild scope={scope} onPublished={vi.fn().mockResolvedValue(undefined)} />);
       await vi.advanceTimersByTimeAsync(0);
-      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls.filter(([input]) => !String(input).includes("/api/workspace/capabilities"))).toHaveLength(1);
       // A transient failure must NOT clear the saved id — a lost id has no UI
       // recovery path once the running job completes.
       expect(window.localStorage.getItem(storageKey)).toBe("job-1");
       await vi.advanceTimersByTimeAsync(5_100);
-      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(fetchMock.mock.calls.filter(([input]) => !String(input).includes("/api/workspace/capabilities")).length).toBeGreaterThanOrEqual(2);
       expect(window.localStorage.getItem(storageKey)).toBe("job-1");
     } finally {
       vi.unstubAllGlobals();

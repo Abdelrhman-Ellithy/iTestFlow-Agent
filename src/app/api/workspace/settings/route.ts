@@ -2,7 +2,11 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { resolveWorkspaceRequest, workspaceRequestError } from "@/modules/workspace/workspace-request";
-import { getWorkspaceSettings, upsertWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
+import {
+  DEFAULT_EXTERNAL_LLM_ENABLED,
+  getWorkspaceSettings,
+  upsertWorkspaceSettings,
+} from "@/modules/workspace/workspace-settings.service";
 import { DEFAULT_RETRY_ATTEMPTS, getMaxOutputTokenCapDefaultFromEnv, MAX_OUTPUT_TOKEN_CAP_OPTIONS, RETRY_ATTEMPT_OPTIONS } from "@/modules/llm/llm-defaults";
 import { getRetrievalTopKFromEnv, TOP_K_MAX, TOP_K_MIN } from "@/modules/rag/retrieval-config";
 import {
@@ -49,6 +53,7 @@ const Schema = z
       })
       .nullable()
       .optional(),
+    externalLlmEnabled: z.boolean().optional(),
     manualBaselineMinutes: baselineMapSchema,
     reviewBaselineMinutes: baselineMapSchema,
   })
@@ -57,6 +62,7 @@ const Schema = z
       value.retrievalTopK !== undefined ||
       value.maxOutputTokenCap !== undefined ||
       value.llmRetryAttempts !== undefined ||
+      value.externalLlmEnabled !== undefined ||
       value.manualBaselineMinutes !== undefined ||
       value.reviewBaselineMinutes !== undefined,
     { message: "Provide a setting to update." },
@@ -97,6 +103,7 @@ export async function GET() {
         retrievalTopK: null,
         maxOutputTokenCap: null,
         llmRetryAttempts: null,
+        externalLlmEnabled: DEFAULT_EXTERNAL_LLM_ENABLED,
         manualBaselineMinutes: null,
         reviewBaselineMinutes: null,
       },
@@ -129,6 +136,7 @@ export async function PUT(request: Request) {
     retrievalTopK: parsed.data.retrievalTopK,
     maxOutputTokenCap: parsed.data.maxOutputTokenCap,
     llmRetryAttempts: parsed.data.llmRetryAttempts,
+    externalLlmEnabled: parsed.data.externalLlmEnabled,
     manualBaselineMinutes: parsed.data.manualBaselineMinutes,
     reviewBaselineMinutes: parsed.data.reviewBaselineMinutes,
     updatedByUserId: context.userId,

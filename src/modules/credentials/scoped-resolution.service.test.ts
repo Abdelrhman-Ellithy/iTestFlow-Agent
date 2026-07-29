@@ -54,6 +54,7 @@ import {
   getUserAzureAdapter,
   getUserAzureAdapterOrgLevel,
   getUserLLMProvider,
+  requireExternalLlmEnabled,
   requireWorkflowContext,
   requireWorkflowRole,
   WorkflowAuthError,
@@ -165,6 +166,27 @@ describe("requireWorkflowRole", () => {
     const error = await captureAuthError(requireWorkflowRole(ctx, ["owner"], "Owners only."));
     expect(error.status).toBe(403);
     expect(error.message).toBe("Owners only.");
+  });
+});
+
+describe("requireExternalLlmEnabled", () => {
+  it("allows manual External LLM workflows when the workspace has no settings row", async () => {
+    await expect(requireExternalLlmEnabled(ctx)).resolves.toBeUndefined();
+    expect(mocks.getWorkspaceSettings).toHaveBeenCalledWith("ws-1");
+  });
+
+  it("allows manual External LLM workflows when explicitly enabled", async () => {
+    mocks.getWorkspaceSettings.mockResolvedValue({ externalLlmEnabled: true });
+
+    await expect(requireExternalLlmEnabled(ctx)).resolves.toBeUndefined();
+  });
+
+  it("rejects manual External LLM workflows when disabled by the workspace", async () => {
+    mocks.getWorkspaceSettings.mockResolvedValue({ externalLlmEnabled: false });
+
+    const error = await captureAuthError(requireExternalLlmEnabled(ctx));
+    expect(error.status).toBe(403);
+    expect(error.message).toBe("External LLM is disabled by a workspace owner or admin.");
   });
 });
 

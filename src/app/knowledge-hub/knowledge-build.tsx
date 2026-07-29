@@ -35,6 +35,7 @@ import type { AiGenerationStatus } from "@/components/workflow/use-ai-generation
 import { WorkflowStepper, type WorkflowStepDefinition } from "@/components/workflow/workflow-stepper"
 import { AppErrorCode } from "@/modules/shared/errors/app-error"
 import type { ActiveProjectScope } from "@/shared/lib/active-project"
+import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability"
 import {
   KnowledgeConflictReview,
   type CompactConflictDecision as ConflictDecision,
@@ -92,13 +93,32 @@ type ManualDraft = {
   mode: "incremental" | "full"
   fallbackReason?: string
   batchCount: number
+  validatedBatchIndexes?: number[]
   batches: Array<{
     batchIndex: number
     batchCount: number
-    workItemCount: number
+    workItemCount?: number
     prompt: string
     carriedForward?: boolean
   }>
+}
+
+type ResumableManualDraftResponse = { draft: ManualDraft | null }
+
+function isResumableManualDraftResponse(value: unknown): value is ResumableManualDraftResponse {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const draft = (value as { draft?: unknown }).draft
+  if (draft === null) return true
+  if (!draft || typeof draft !== "object" || Array.isArray(draft)) return false
+  const candidate = draft as Partial<ManualDraft>
+  return (
+    typeof candidate.draftId === "string" &&
+    (candidate.mode === "incremental" || candidate.mode === "full") &&
+    typeof candidate.batchCount === "number" &&
+    Array.isArray(candidate.batches) &&
+    (candidate.validatedBatchIndexes === undefined ||
+      (Array.isArray(candidate.validatedBatchIndexes) && candidate.validatedBatchIndexes.every(Number.isInteger)))
+  )
 }
 
 type Props = {
@@ -172,6 +192,7 @@ export function KnowledgeBuild({
   resumableDraft,
 }: Props) {
   const [generationMode, setGenerationMode] = useState<"automatic" | "external">("automatic")
+  const externalLlmAvailability = useExternalLlmAvailability(scope.workspaceId)
   const [compileMode, setCompileMode] = useState<"incremental" | "full">("incremental")
   const [job, setJob] = useState<JobView | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -192,6 +213,7 @@ export function KnowledgeBuild({
   const [publishing, setPublishing] = useState(false)
   const [draftHadConflicts, setDraftHadConflicts] = useState(false)
   const [workflowPublished, setWorkflowPublished] = useState(false)
+  const [resumableManualDraft, setResumableManualDraft] = useState<ManualDraft | null>(null)
   const [clockMs, setClockMs] = useState(() => Date.now())
   const [pageVisible, setPageVisible] = useState(() => typeof document === "undefined" || document.visibilityState !== "hidden")
   const [pollCycle, setPollCycle] = useState(0)
@@ -200,11 +222,74 @@ export function KnowledgeBuild({
   const loadingCompletionJobIdRef = useRef<string | null>(null)
   const pollFailureCountRef = useRef(0)
   const pollImmediatelyRef = useRef(false)
+  const manualOperationVersionRef = useRef(0)
+
+  useEffect(() => {
+    if (externalLlmAvailability.enabled) return
+    manualOperationVersionRef.current += 1
+    setResumableManualDraft(null)
+    setConflictsLoading(false)
+    if (generationMode !== "external") return
+    setGenerationMode("automatic")
+    setManualDraft(null)
+    setManualResponses({})
+    setValidatedManualBatches({})
+    setManualBusy(false)
+    setError(null)
+    onActivityChange?.(false)
+  }, [externalLlmAvailability.enabled, generationMode, onActivityChange])
+
+  useEffect(() => {
+    if (!externalLlmAvailability.enabled || generationMode !== "external" || manualDraft) {
+      if (!externalLlmAvailability.enabled || generationMode !== "external") setResumableManualDraft(null)
+      return
+    }
+
+    const controller = new AbortController()
+    const manualOperationVersion = manualOperationVersionRef.current
+    setResumableManualDraft(null)
+    void fetch("/api/context/knowledge/manual/draft", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ scope, resumeLatest: true }),
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        if (!response.ok) return null
+        const body = await response.json().catch(() => null) as unknown
+        return isResumableManualDraftResponse(body) ? body.draft : null
+      })
+      .then((draft) => {
+        if (controller.signal.aborted || manualOperationVersion !== manualOperationVersionRef.current) return
+        setResumableManualDraft(draft)
+      })
+      .catch(() => {
+        // Resume discovery is optional; preparation remains available if a
+        // transient request fails.
+      })
+
+    return () => controller.abort()
+  }, [
+    externalLlmAvailability.enabled,
+    generationMode,
+    manualDraft,
+    scope.azureOrganizationUrl,
+    scope.azureProjectId,
+    scope.azureProjectName,
+    scope.projectId,
+    scope.workspaceId,
+  ])
 
   const storageKey = `itestflow.project-knowledge-job.${scope.workspaceId ?? "workspace"}.${scope.projectId}`
+  const activeGenerationMode = generationMode === "external" && !externalLlmAvailability.enabled
+    ? "automatic"
+    : generationMode
   const activeOperation = job && (job.status === "pending" || job.status === "running") ? job.operation : null
   const buildJobActive = activeOperation === "build"
-  const currentManualBatch = manualDraft?.batches.find((batch) => !validatedManualBatches[batch.batchIndex])
+  const currentManualBatch = manualDraft?.batches.find((batch) =>
+    !Object.prototype.hasOwnProperty.call(validatedManualBatches, batch.batchIndex),
+  )
     ?? manualDraft?.batches[manualDraft.batches.length - 1]
   const allManualBatchesValidated = Boolean(manualDraft) &&
     Object.keys(validatedManualBatches).length === manualDraft!.batchCount
@@ -222,7 +307,12 @@ export function KnowledgeBuild({
     return body.job
   }, [scope.projectId, scope.workspaceId])
 
-  const loadConflictPage = useCallback(async (draftId: string, page: number) => {
+  const loadConflictPage = useCallback(async (
+    draftId: string,
+    page: number,
+    isCurrent: () => boolean = () => true,
+  ) => {
+    if (!isCurrent()) return
     setConflictsLoading(true)
     setError(null)
     try {
@@ -230,15 +320,19 @@ export function KnowledgeBuild({
         `/api/context/knowledge/drafts/${encodeURIComponent(draftId)}/conflicts`,
         { scope, page, pageSize: 50 },
       )
-      setConflictPage(result)
+      if (isCurrent()) setConflictPage(result)
     } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : "Knowledge conflicts could not be loaded.")
+      if (isCurrent()) setError(loadError instanceof Error ? loadError.message : "Knowledge conflicts could not be loaded.")
     } finally {
-      setConflictsLoading(false)
+      if (isCurrent()) setConflictsLoading(false)
     }
   }, [scope])
 
-  const processKnowledgeResult = useCallback(async (result: KnowledgeOperationResult) => {
+  const processKnowledgeResult = useCallback(async (
+    result: KnowledgeOperationResult,
+    isCurrent: () => boolean = () => true,
+  ) => {
+    if (!isCurrent()) return
     if (typeof result.omittedEntryCount === "number" && result.omittedEntryCount > 0) {
       setOmissionSummary({ count: result.omittedEntryCount, reasons: result.omissionReasons ?? {} })
     }
@@ -248,7 +342,7 @@ export function KnowledgeBuild({
       setDraftHadConflicts(true)
       setWorkflowPublished(false)
       setDecisions({})
-      await loadConflictPage(result.draftId, 1)
+      await loadConflictPage(result.draftId, 1, isCurrent)
       return
     }
     if (result.outcome === "ready_to_publish" && result.draftId) {
@@ -524,29 +618,55 @@ export function KnowledgeBuild({
   }
 
   async function prepareExternalDraft() {
+    if (!externalLlmAvailability.enabled) return
+    manualOperationVersionRef.current += 1
+    const manualOperationVersion = manualOperationVersionRef.current
     setManualBusy(true)
     setError(null)
+    setResumableManualDraft(null)
     setReadyDraftId(null)
     setConflictDraftId(null)
     setDraftHadConflicts(false)
     setWorkflowPublished(false)
     try {
       const draft = await postJson<ManualDraft>("/api/context/knowledge/manual/draft", { scope, mode: compileMode })
+      if (manualOperationVersion !== manualOperationVersionRef.current) return
       setManualDraft(draft)
       setManualResponses({})
       setValidatedManualBatches({})
       onActivityChange?.(true)
     } catch (prepareError) {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return
       setError(prepareError instanceof Error ? prepareError.message : "The external prompt could not be prepared.")
     } finally {
-      setManualBusy(false)
+      if (manualOperationVersion === manualOperationVersionRef.current) setManualBusy(false)
     }
   }
 
+  function resumeExternalDraft() {
+    if (!externalLlmAvailability.enabled || !resumableManualDraft) return
+    manualOperationVersionRef.current += 1
+    setManualDraft(resumableManualDraft)
+    setManualResponses({})
+    setValidatedManualBatches(Object.fromEntries(
+      (resumableManualDraft.validatedBatchIndexes ?? []).map((batchIndex) => [batchIndex, 0]),
+    ))
+    setCompileMode(resumableManualDraft.mode)
+    setResumableManualDraft(null)
+    setError(null)
+    setReadyDraftId(null)
+    setConflictDraftId(null)
+    setConflictPage(null)
+    setDraftHadConflicts(false)
+    setWorkflowPublished(false)
+    onActivityChange?.(true)
+  }
+
   async function validateExternalBatch() {
-    if (!manualDraft || !currentManualBatch) return
+    if (!externalLlmAvailability.enabled || !manualDraft || !currentManualBatch) return
     const rawOutput = manualResponses[currentManualBatch.batchIndex]?.trim()
     if (!rawOutput) return
+    const manualOperationVersion = manualOperationVersionRef.current
     setManualBusy(true)
     setError(null)
     try {
@@ -559,16 +679,19 @@ export function KnowledgeBuild({
           rawOutput,
         },
       )
+      if (manualOperationVersion !== manualOperationVersionRef.current) return
       setValidatedManualBatches((current) => ({ ...current, [result.batchIndex]: result.entryCount }))
     } catch (validationError) {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return
       setError(validationError instanceof Error ? validationError.message : "The external response could not be validated.")
     } finally {
-      setManualBusy(false)
+      if (manualOperationVersion === manualOperationVersionRef.current) setManualBusy(false)
     }
   }
 
   async function finalizeExternalDraft() {
-    if (!manualDraft) return
+    if (!externalLlmAvailability.enabled || !manualDraft) return
+    const manualOperationVersion = manualOperationVersionRef.current
     setManualBusy(true)
     setError(null)
     try {
@@ -577,12 +700,14 @@ export function KnowledgeBuild({
         mode: compileMode,
         draftId: manualDraft.draftId,
       })
-      await processKnowledgeResult(result)
-      onActivityChange?.(false)
+      if (manualOperationVersion !== manualOperationVersionRef.current) return
+      await processKnowledgeResult(result, () => manualOperationVersion === manualOperationVersionRef.current)
+      if (manualOperationVersion === manualOperationVersionRef.current) onActivityChange?.(false)
     } catch (finalizeError) {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return
       setError(finalizeError instanceof Error ? finalizeError.message : "External results could not be finalized.")
     } finally {
-      setManualBusy(false)
+      if (manualOperationVersion === manualOperationVersionRef.current) setManualBusy(false)
     }
   }
 
@@ -665,7 +790,8 @@ export function KnowledgeBuild({
               </p>
             </div>
             <GenerationModeToggle
-              mode={generationMode === "automatic" ? "auto" : "manual"}
+              mode={activeGenerationMode === "automatic" ? "auto" : "manual"}
+              externalLlmAvailability={externalLlmAvailability}
               onChange={(mode) => setGenerationMode(mode === "auto" ? "automatic" : "external")}
               ariaLabel="Knowledge build mode"
             />
@@ -709,7 +835,7 @@ export function KnowledgeBuild({
             </p>
           </div>
 
-          <Tabs value={generationMode}>
+          <Tabs value={activeGenerationMode}>
             <TabsContent value="automatic" className="mt-5">
               {generationAvailable === false ? (
                 <div role="status" className="mb-4 flex flex-col gap-3 rounded-md border border-warning/40 bg-warning/10 p-4 text-sm text-warning-foreground sm:flex-row sm:items-start sm:justify-between">
@@ -778,13 +904,32 @@ export function KnowledgeBuild({
                     variant="outline"
                     className="min-h-11 shrink-0"
                     onClick={() => void prepareExternalDraft()}
-                    disabled={!sourceIndexReady || sourceIndexLoading || manualBusy || Boolean(activeOperation) || decisionsBusy || publishing}
+                    disabled={!externalLlmAvailability.enabled || !sourceIndexReady || sourceIndexLoading || manualBusy || Boolean(activeOperation) || decisionsBusy || publishing}
                   >
                     {manualBusy ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : <Send className="size-4" aria-hidden="true" />}
                     Prepare prompt
                   </Button>
                 </div>
               </section>
+              {externalLlmAvailability.enabled && resumableManualDraft && !manualDraft ? (
+                <div role="status" className="flex flex-col gap-3 rounded-md border border-primary/30 bg-primary/5 p-4 text-sm sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="font-semibold">Saved external LLM draft available</div>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      Resume the persisted prompts from this project. {resumableManualDraft.validatedBatchIndexes?.length ?? 0} of {resumableManualDraft.batchCount} batches are already validated.
+                    </p>
+                  </div>
+                  <Button
+                    variant="outline"
+                    className="min-h-11 shrink-0"
+                    onClick={resumeExternalDraft}
+                    disabled={manualBusy || Boolean(activeOperation) || decisionsBusy || publishing}
+                  >
+                    <Send className="size-4" aria-hidden="true" />
+                    Resume external draft
+                  </Button>
+                </div>
+              ) : null}
               {manualDraft?.fallbackReason ? <p className="text-sm text-muted-foreground">{manualDraft.fallbackReason}</p> : null}
               {manualDraft && manualDraft.batchCount === 0 ? (
                 <div role="status" className="rounded-md border border-border bg-muted/30 p-4 text-sm">No changed source batches require an external prompt.</div>

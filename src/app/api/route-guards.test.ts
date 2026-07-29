@@ -28,6 +28,22 @@ const KNOWLEDGE_BUILD_ROUTES = [
   "context/knowledge/promote/route.ts",
 ];
 
+const EXTERNAL_LLM_MANUAL_ROUTES = [
+  "requirement-analysis/manual/draft/route.ts",
+  "requirement-analysis/manual/submit/route.ts",
+  "test-cases/manual/draft/route.ts",
+  "test-cases/manual/submit/route.ts",
+  "existing-test-case-review/manual/draft/route.ts",
+  "existing-test-case-review/manual/submit/route.ts",
+  "bugs/manual/draft/route.ts",
+  "bugs/manual/submit/route.ts",
+  "test-execution-effort/external-prompt/route.ts",
+  "test-execution-effort/manual/submit/route.ts",
+  "context/knowledge/manual/draft/route.ts",
+  "context/knowledge/manual/validate/route.ts",
+  "context/knowledge/manual/finalize/route.ts",
+];
+
 const WORKSPACE_ADMIN_ROUTES = [
   "workspace/members/[membershipId]/route.ts",
   "workspace/settings/route.ts",
@@ -98,6 +114,29 @@ describe("API route guards", () => {
     expect(missingRoleGuard).toEqual([]);
   });
 
+  it("keeps every manual External LLM endpoint behind the workspace capability guard", () => {
+    const missingExternalLlmGuard = EXTERNAL_LLM_MANUAL_ROUTES.filter((route) => {
+      const text = readFileSync(join(API_ROOT, route), "utf8");
+      const contextGuard = text.indexOf("await requireWorkflowContext(");
+      const externalLlmGuard = text.indexOf("await requireExternalLlmEnabled(");
+      return contextGuard < 0 || externalLlmGuard < 0 || externalLlmGuard < contextGuard;
+    });
+
+    expect(missingExternalLlmGuard).toEqual([]);
+  });
+
+  it("checks the Knowledge Hub role before the External LLM capability", () => {
+    const knowledgeRoutes = EXTERNAL_LLM_MANUAL_ROUTES.filter((route) => route.startsWith("context/knowledge/"));
+    const invalidOrder = knowledgeRoutes.filter((route) => {
+      const text = readFileSync(join(API_ROOT, route), "utf8");
+      const roleGuard = text.indexOf("await requireWorkflowRole(");
+      const externalLlmGuard = text.indexOf("await requireExternalLlmEnabled(");
+      return roleGuard < 0 || externalLlmGuard < 0 || roleGuard > externalLlmGuard;
+    });
+
+    expect(invalidOrder).toEqual([]);
+  });
+
   it("keeps workspace administration routes limited to owner/admin roles", () => {
     const missingRoleGuard = WORKSPACE_ADMIN_ROUTES
       .map((route) => ({ route, text: readFileSync(join(API_ROOT, route), "utf8") }))
@@ -111,6 +150,14 @@ describe("API route guards", () => {
     const text = readFileSync(join(API_ROOT, "workspace/members/route.ts"), "utf8");
 
     expect(text).toContain("resolveWorkspaceRequest()");
+    expect(text).not.toContain(`resolveWorkspaceRequest(["owner", "admin"])`);
+  });
+
+  it("keeps workspace capabilities visible to active workspace members", () => {
+    const text = readFileSync(join(API_ROOT, "workspace/capabilities/route.ts"), "utf8");
+
+    expect(text).toContain("resolveWorkspaceRequest()");
+    expect(text).toContain("resolveWorkspaceRequestForWorkspace(requestedWorkspaceId)");
     expect(text).not.toContain(`resolveWorkspaceRequest(["owner", "admin"])`);
   });
 });

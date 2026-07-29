@@ -22,6 +22,7 @@ const draftService = vi.hoisted(() => ({
   getProjectKnowledgeDraft: vi.fn(),
   heartbeatProjectKnowledgeDraft: vi.fn(),
   loadCurrentProjectKnowledgeSourceManifest: vi.fn(),
+  loadLatestResumableProjectKnowledgeManualDraft: vi.fn(),
   loadProjectKnowledgeManualBatchResults: vi.fn(),
   publishProjectKnowledgeDraft: vi.fn(),
   saveProjectKnowledgeManualBatchResult: vi.fn(),
@@ -47,6 +48,7 @@ import {
   buildProjectKnowledgeManualDraft,
   loadProjectKnowledgeContext,
   previewGeneratedProjectKnowledgeBase,
+  resumeLatestProjectKnowledgeManualDraft,
   saveManualProjectKnowledgeBaseFromBatches,
   validateProjectKnowledgeManualBatch,
 } from "./project-knowledge.service";
@@ -421,6 +423,41 @@ describe("buildProjectKnowledgeManualDraft batching", () => {
   it("requires indexed project context before building a draft", async () => {
     await expect(buildProjectKnowledgeManualDraft({ scope: projectScope() }))
       .rejects.toThrow("Fetch and index project context before extracting the knowledge base.");
+  });
+
+  it("reconstructs stored prompts and validated batch indexes for a resumable manual draft", async () => {
+    draftService.loadLatestResumableProjectKnowledgeManualDraft.mockResolvedValue({
+      draft: {
+        id: "draft-resume",
+        status: "awaiting_input",
+        compilationMode: "incremental",
+      },
+      batches: [
+        { batchIndex: 1, systemPrompt: "Stored system", userPrompt: "Stored user one" },
+        { batchIndex: 2, systemPrompt: "Stored system", userPrompt: "Stored user two" },
+      ],
+      validatedBatchIndexes: [1],
+    });
+
+    const resumed = await resumeLatestProjectKnowledgeManualDraft({ scope: projectScope() });
+
+    expect(resumed).toMatchObject({
+      draftId: "draft-resume",
+      mode: "incremental",
+      batchCount: 2,
+      validatedBatchIndexes: [1],
+    });
+    expect(resumed?.batches).toEqual([
+      expect.objectContaining({ batchIndex: 1, batchCount: 2, prompt: expect.stringContaining("Batch 1 of 2") }),
+      expect.objectContaining({ batchIndex: 2, batchCount: 2, prompt: expect.stringContaining("Batch 2 of 2") }),
+    ]);
+    expect(resumed?.batches[0]?.prompt).toContain("Stored user one");
+  });
+
+  it("returns no manual resume payload when this project has no eligible draft", async () => {
+    draftService.loadLatestResumableProjectKnowledgeManualDraft.mockResolvedValue(null);
+
+    await expect(resumeLatestProjectKnowledgeManualDraft({ scope: projectScope() })).resolves.toBeNull();
   });
 });
 

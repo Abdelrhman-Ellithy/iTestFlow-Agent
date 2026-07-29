@@ -53,6 +53,7 @@ import { getReportBugActionGates } from "./lib/action-gating";
 import type { GeneratedTestCase } from "@/components/workflow/test-intelligence-types";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
+import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
 import type { ProjectUser } from "@/types/azure-devops";
 
 type WorkflowMode = "auto" | "manual";
@@ -138,6 +139,7 @@ export function ReportBugClient() {
   const [activeStep, setActiveStep] = useState<"describe" | "review">("describe");
   const [scope, setScope] = useState<ActiveProjectScope | null>(null);
   const [mode, setMode] = useState<WorkflowMode>("auto");
+  const externalLlmAvailability = useExternalLlmAvailability(scope?.workspaceId);
   const [bugDescription, setBugDescription] = useState("");
   const [parentStoryId, setParentStoryId] = useState("");
   const [parentStory, setParentStory] = useState<WorkItem | null>(null);
@@ -215,6 +217,17 @@ export function ReportBugClient() {
     window.addEventListener("itestflow:active-project-changed", onChange);
     return () => window.removeEventListener("itestflow:active-project-changed", onChange);
   }, [resetGeneration, resetPreparation, endLoadingGameSession]);
+
+  useEffect(() => {
+    if (externalLlmAvailability.enabled || mode !== "manual") return;
+    generationRequestVersionRef.current += 1;
+    resetPreparation();
+    setMode("auto");
+    setManualDraft(null);
+    setManualResponse("");
+    setManualSubmitLoading(false);
+    setManualSubmitError(null);
+  }, [externalLlmAvailability.enabled, mode, resetPreparation]);
 
   useEffect(() => {
     if (!scope) {
@@ -378,23 +391,27 @@ export function ReportBugClient() {
   }
 
   async function prepareManualPrompt() {
-    if (!scope || !bugDescription.trim() || parentStoryInvalid) return;
+    if (!externalLlmAvailability.enabled || !scope || !bugDescription.trim() || parentStoryInvalid) return;
     if (prep.isRunning) return;
     invalidateGeneratedReport();
+    const requestVersion = generationRequestVersionRef.current;
     setManualSubmitError(null);
     setManualResponse("");
     scrollToNextStep(promptSectionRef);
     const data = await prep.start((signal) =>
       postJson<ManualPromptDraft>("/api/bugs/manual/draft", buildGenerationPayload(scope), signal),
     );
-    if (data) {
+    // A workspace owner can turn off External LLM while the prompt request is
+    // pending. The disabling effect advances this version, so a late response
+    // must not restore a now-disabled manual workflow.
+    if (data && requestVersion === generationRequestVersionRef.current) {
       setManualDraft(data);
       scrollToNextStep(promptSectionRef);
     }
   }
 
   async function submitManualResponse() {
-    if (!scope || !manualResponse.trim()) return;
+    if (!externalLlmAvailability.enabled || !scope || !manualResponse.trim()) return;
     const requestVersion = generationRequestVersionRef.current;
     setManualSubmitLoading(true);
     setManualSubmitError(null);
@@ -634,6 +651,7 @@ export function ReportBugClient() {
             action={
               <GenerationModeToggle
                 mode={mode}
+                externalLlmAvailability={externalLlmAvailability}
                 onChange={(nextMode) => {
                   if (nextMode === mode) return;
                   setHasUnfinishedWork(true);
@@ -841,7 +859,7 @@ Actual: the button stays inactive / no request is triggered.`}
                       void prepareManualPrompt();
                     }
                   }}
-                  disabled={generateDisabled}
+                  disabled={generateDisabled || (mode === "manual" && !externalLlmAvailability.enabled)}
                   aria-busy={gen.isRunning || prep.isRunning}
                 >
                   {gen.isRunning || prep.isRunning ? <Loader2 className="size-4 motion-safe:animate-spin" /> : <Play className="size-4" />}

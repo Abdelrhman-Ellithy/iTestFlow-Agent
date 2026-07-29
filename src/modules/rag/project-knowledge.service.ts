@@ -50,6 +50,7 @@ import {
   failProjectKnowledgeDraft,
   getProjectKnowledgeDraft,
   heartbeatProjectKnowledgeDraft,
+  loadLatestResumableProjectKnowledgeManualDraft,
   loadProjectKnowledgeManualBatchResults,
   setProjectKnowledgeDraftCompilationMode,
   storeProjectKnowledgeManualDraftBatches,
@@ -632,6 +633,46 @@ export async function buildProjectKnowledgeManualDraft(input: {
       carriedRawOutput: carriedByIndex.get(batch.batchIndex)?.rawOutput,
       carriedKnowledgeBase: carriedByIndex.get(batch.batchIndex)?.validatedOutput,
     })),
+  };
+}
+
+/**
+ * Reconstructs the client-facing prompt payload for the latest manual draft
+ * still awaiting input. Prompts stay on the persisted batch records so a page
+ * reload or temporary workspace-level disablement does not discard progress.
+ */
+export async function resumeLatestProjectKnowledgeManualDraft(input: {
+  scope: ProjectScope;
+}) {
+  const scope = assertProjectScope(input.scope);
+  const resumable = await loadLatestResumableProjectKnowledgeManualDraft({ scope });
+  if (!resumable) return null;
+
+  // Manual drafts are created only in these modes. Treat a legacy non-incremental
+  // value as full so its stored prompts can still be resumed safely.
+  const mode: ProjectKnowledgeCompileMode = resumable.draft.compilationMode === "incremental"
+    ? "incremental"
+    : "full";
+  const batchCount = resumable.batches.length;
+
+  return {
+    draftId: resumable.draft.id,
+    draftStatus: resumable.draft.status,
+    schemaName: "ProjectKnowledgeGeneratedBase",
+    promptName: projectKnowledgeExtractionPrompt.name,
+    promptVersion: projectKnowledgeExtractionPrompt.version,
+    mode,
+    batchCount,
+    batches: resumable.batches.map((batch) => ({
+      batchIndex: batch.batchIndex,
+      batchCount,
+      prompt: buildManualPromptMarkdown({
+        title: buildManualKnowledgePromptTitle(mode, batch.batchIndex, batchCount),
+        system: batch.systemPrompt,
+        user: batch.userPrompt,
+      }),
+    })),
+    validatedBatchIndexes: resumable.validatedBatchIndexes,
   };
 }
 

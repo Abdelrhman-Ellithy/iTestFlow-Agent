@@ -41,6 +41,7 @@ import type {
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 import { countEditedById } from "@/shared/lib/edited-count";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
+import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
 
 import {
   countInvalidSuggestions,
@@ -67,6 +68,7 @@ export function TestGapAnalysisClient() {
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
   const [mode, setMode] = useState<WorkflowMode>("auto");
+  const externalLlmAvailability = useExternalLlmAvailability(scope?.workspaceId);
   const [extraInstructions, setExtraInstructions] = useState("");
   const [state, setState] = useState<ApiState<ExistingReviewResult>>({ loading: false, error: null, data: null });
   const gen = useAiGeneration();
@@ -82,6 +84,7 @@ export function TestGapAnalysisClient() {
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
+  const manualOperationVersionRef = useRef(0);
   const [selectedSuggestedIds, setSelectedSuggestedIds] = useState<string[]>([]);
   const [focusedMatrixRowIds, setFocusedMatrixRowIds] = useState<string[]>([]);
   const [reviewTab, setReviewTab] = useState<ReviewTab>("findings");
@@ -104,6 +107,16 @@ export function TestGapAnalysisClient() {
     setManualResponse("");
     setManualSubmitError(null);
   }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
+  useEffect(() => {
+    if (externalLlmAvailability.enabled || mode !== "manual") return;
+    manualOperationVersionRef.current += 1;
+    cancelPreparation();
+    setMode("auto");
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitLoading(false);
+    setManualSubmitError(null);
+  }, [cancelPreparation, externalLlmAvailability.enabled, mode]);
   const extraInstructionsValid = extraInstructions.length <= EXTRA_INSTRUCTIONS_MAX_LENGTH;
   const suggestedAdditions = useMemo(() => state.data?.suggestedAdditions ?? [], [state.data?.suggestedAdditions]);
   const selectedSuggestedAdditions = useMemo(
@@ -209,8 +222,9 @@ export function TestGapAnalysisClient() {
   }
 
   async function prepareManualPrompt() {
-    if (!scope || !targetWorkItemId || !extraInstructionsValid) return;
+    if (!externalLlmAvailability.enabled || !scope || !targetWorkItemId || !extraInstructionsValid) return;
     if (prep.isRunning) return;
+    const manualOperationVersion = manualOperationVersionRef.current;
     setState({ loading: false, error: null, data: null });
     setSelectedSuggestedIds([]);
     setManualDraft({ loading: true, error: null, data: null });
@@ -225,15 +239,18 @@ export function TestGapAnalysisClient() {
       ),
     );
     if (data) {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualDraft({ loading: false, error: null, data });
       scrollToNextStep(promptSectionRef);
     } else {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualDraft({ loading: false, error: null, data: null });
     }
   }
 
   async function submitManualResponse() {
-    if (!scope || !targetWorkItemId || !manualDraft.data || !manualResponse.trim()) return;
+    if (!externalLlmAvailability.enabled || !scope || !targetWorkItemId || !manualDraft.data || !manualResponse.trim()) return;
+    const manualOperationVersion = manualOperationVersionRef.current;
     setManualSubmitLoading(true);
     setManualSubmitError(null);
     try {
@@ -246,12 +263,14 @@ export function TestGapAnalysisClient() {
         contextCitations: manualDraft.data.contextCitations,
         retrievalTopK: manualDraft.data.retrievalTopK,
       });
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       applyReviewResult(data);
       scrollToNextStep(resultsRef);
     } catch (error) {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualSubmitError(caughtErrorMessage(error, "External LLM response validation failed."));
     } finally {
-      setManualSubmitLoading(false);
+      if (manualOperationVersion === manualOperationVersionRef.current) setManualSubmitLoading(false);
     }
   }
 
@@ -294,6 +313,7 @@ export function TestGapAnalysisClient() {
             action={
               <GenerationModeToggle
                 mode={mode}
+                externalLlmAvailability={externalLlmAvailability}
                 onChange={(nextMode) => {
                   setHasUnfinishedWork(true);
                   setMode(nextMode);
@@ -323,7 +343,7 @@ export function TestGapAnalysisClient() {
                     {gen.isRunning ? "Reviewing..." : "Analyze Coverage"}
                   </Button>
                 ) : (
-                  <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !extraInstructionsValid}>
+                  <Button onClick={prepareManualPrompt} disabled={!externalLlmAvailability.enabled || !scope || !targetWorkItemId || prep.isRunning || !extraInstructionsValid}>
                     {prep.isRunning ? <Loader2 className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" /> : <Play className="h-4 w-4" />}
                     {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
                   </Button>

@@ -28,6 +28,7 @@ import { postJson } from "@/components/workflow/post-json";
 import { WORK_ITEM_ID_PLACEHOLDER, WORK_ITEM_ID_TITLE } from "@/components/workflow/work-item-loader";
 import { WorkItemSummaryCard } from "@/components/workflow/work-item-summary-card";
 import { readActiveProject, type ActiveProjectScope } from "@/shared/lib/active-project";
+import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
 import type { TokenUsage } from "@/modules/llm/llm-types";
 import type { WorkflowContextCitation } from "@/modules/rag/workflow-context-citations";
 
@@ -188,6 +189,7 @@ export function TestExecutionEffortClient() {
   const [storyId, setStoryId] = useState("");
   const [storyLookup, setStoryLookup] = useState<ApiState<WorkItem>>({ loading: false, error: null, data: null });
   const [mode, setMode] = useState<WorkflowMode>("auto");
+  const externalLlmAvailability = useExternalLlmAvailability(scope?.workspaceId);
   const [options, setOptions] = useState<EffortOptions>(defaultOptions);
   const [preview, setPreview] = useState<EffortPreview | null>(null);
   const [estimateResult, setEstimateResult] = useState<GenerateResponse | null>(null);
@@ -195,6 +197,7 @@ export function TestExecutionEffortClient() {
   const [externalResponse, setExternalResponse] = useState("");
   const [loadingAction, setLoadingAction] = useState<"generate" | "prompt" | "submit" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const manualOperationVersionRef = useRef(0);
   const gen = useAiGeneration();
   const prep = useAiGeneration({ prepareMs: 400, buildPromptMs: 500 });
   const loadingGame = useLlmLoadingGameSession<GenerateResponse>((data) => {
@@ -229,6 +232,17 @@ export function TestExecutionEffortClient() {
     setExternalResponse("");
     setError(null);
   }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
+
+  useEffect(() => {
+    if (externalLlmAvailability.enabled || mode !== "manual") return;
+    manualOperationVersionRef.current += 1;
+    cancelPreparation();
+    setMode("auto");
+    setExternalDraft(null);
+    setExternalResponse("");
+    setLoadingAction(null);
+    setError(null);
+  }, [cancelPreparation, externalLlmAvailability.enabled, mode]);
 
   const requestPayload = useMemo(() => ({
     scope,
@@ -310,8 +324,9 @@ export function TestExecutionEffortClient() {
   }
 
   async function prepareExternalPrompt() {
-    if (!canSubmit()) return;
+    if (!externalLlmAvailability.enabled || !canSubmit()) return;
     if (prep.isRunning) return;
+    const manualOperationVersion = manualOperationVersionRef.current;
     setError(null);
     setPreview(null);
     setEstimateResult(null);
@@ -322,6 +337,7 @@ export function TestExecutionEffortClient() {
       postJson<ExternalPromptDraft>("/api/test-execution-effort/external-prompt", requestPayload, signal),
     );
     if (data) {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setPreview(data);
       setEstimateResult(null);
       setExternalDraft(data);
@@ -331,7 +347,8 @@ export function TestExecutionEffortClient() {
   }
 
   async function submitExternalResponse() {
-    if (!scope || !externalDraft || !externalResponse.trim()) return;
+    if (!externalLlmAvailability.enabled || !scope || !externalDraft || !externalResponse.trim()) return;
+    const manualOperationVersion = manualOperationVersionRef.current;
     setLoadingAction("submit");
     setError(null);
     try {
@@ -343,15 +360,17 @@ export function TestExecutionEffortClient() {
         contextCitations: externalDraft.contextCitations,
         retrievalTopK: externalDraft.retrievalTopK,
       });
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setPreview(data);
       setEstimateResult(data);
       setHasUnfinishedWork(false);
       setActiveStep("review");
       scrollToNextStep(reviewRef);
     } catch (submitError) {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setError(submitError instanceof Error ? submitError.message : "External LLM response validation failed.");
     } finally {
-      setLoadingAction(null);
+      if (manualOperationVersion === manualOperationVersionRef.current) setLoadingAction(null);
     }
   }
 
@@ -417,6 +436,7 @@ export function TestExecutionEffortClient() {
               </div>
               <GenerationModeToggle
                 mode={mode}
+                externalLlmAvailability={externalLlmAvailability}
                 onChange={(nextMode) => {
                   setHasUnfinishedWork(true);
                   setMode(nextMode);
@@ -451,7 +471,7 @@ export function TestExecutionEffortClient() {
                     {gen.isRunning ? "Generating..." : "Generate"}
                   </Button>
                 ) : (
-                  <Button onClick={prepareExternalPrompt} disabled={actionDisabled || prep.isRunning} aria-busy={prep.isRunning}>
+                  <Button onClick={prepareExternalPrompt} disabled={!externalLlmAvailability.enabled || actionDisabled || prep.isRunning} aria-busy={prep.isRunning}>
                     {prep.isRunning ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
                     {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
                   </Button>

@@ -126,6 +126,7 @@ The recommended setup path is [http://127.0.0.1:3000/login](http://127.0.0.1:300
 - LLM provider and model
 - Provider API key
 - Maximum output token cap and transient-failure retry count
+- Whether the manual External LLM copy/paste mode is available in the workspace
 - Project-context retrieval count
 - Optional automatic context-update schedule and filters owned by the workspace
 

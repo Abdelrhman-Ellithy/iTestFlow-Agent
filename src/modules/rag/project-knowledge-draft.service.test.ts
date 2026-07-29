@@ -45,6 +45,7 @@ import {
   completeProjectKnowledgeDraft,
   getLatestInReviewProjectKnowledgeDraft,
   getProjectKnowledgeDraft,
+  loadLatestResumableProjectKnowledgeManualDraft,
   getProjectKnowledgeDraftConflicts,
   loadProjectKnowledgeManualBatchResults,
   publishProjectKnowledgeDraft,
@@ -983,6 +984,56 @@ describe("manual draft batch persistence", () => {
       partialKnowledgeBases: [emptyKnowledge],
       rawOutputs: ["{}"],
     });
+  });
+
+  it("loads the newest current-base manual draft with its persisted prompts and validated indexes", async () => {
+    database.sqlGet.mockResolvedValue(draftRow({
+      id: "draft-resume",
+      compilation_mode: "incremental",
+      base_revision_id: "revision-1",
+    }));
+    database.sqlAll.mockResolvedValue([
+      {
+        batch_index: 1,
+        status: "validated",
+        validated_output: emptyKnowledge,
+        system_prompt: "system one",
+        user_prompt: "user one",
+      },
+      {
+        batch_index: 2,
+        status: "awaiting_input",
+        validated_output: null,
+        system_prompt: "system two",
+        user_prompt: "user two",
+      },
+    ]);
+
+    const result = await loadLatestResumableProjectKnowledgeManualDraft({ scope });
+
+    expect(result).toMatchObject({
+      draft: { id: "draft-resume", compilationMode: "incremental", persistedStatus: "awaiting_input" },
+      batches: [
+        { batchIndex: 1, systemPrompt: "system one", userPrompt: "user one" },
+        { batchIndex: 2, systemPrompt: "system two", userPrompt: "user two" },
+      ],
+      validatedBatchIndexes: [1],
+    });
+    expect(database.sqlGet).toHaveBeenCalledWith(
+      expect.stringContaining("drafts.base_revision_id IS NOT DISTINCT FROM base.active_revision_id"),
+      expect.objectContaining({
+        workspaceId: scope.workspaceId,
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+      }),
+    );
+  });
+
+  it("does not resume a missing or expired manual draft", async () => {
+    database.sqlGet.mockResolvedValue(undefined);
+
+    await expect(loadLatestResumableProjectKnowledgeManualDraft({ scope })).resolves.toBeNull();
+    expect(database.sqlAll).not.toHaveBeenCalled();
   });
 });
 
