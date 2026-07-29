@@ -36,6 +36,10 @@ export async function runRequirementAnalysis(input: {
   const scope = assertProjectScope(input.scope);
   const promptDraft = buildRequirementAnalysisPromptDraft({
     scope,
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
+    rankedKnowledgeKeys: input.rankedKnowledgeKeys,
     targetRequirement: input.targetRequirement,
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,

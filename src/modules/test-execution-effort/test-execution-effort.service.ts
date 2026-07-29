@@ -60,6 +60,10 @@ export async function generateTestExecutionEffort(input: {
   assertLinkedTestCasesExist(input.linkedTestCases);
   const promptDraft = buildTestExecutionEffortPromptDraft({
     scope,
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
+    rankedKnowledgeKeys: input.rankedKnowledgeKeys,
     targetRequirement: input.targetRequirement,
     linkedTestCases: input.linkedTestCases,
     relatedWorkItems: input.relatedWorkItems ?? [],
@@ -131,6 +135,10 @@ export function buildTestExecutionEffortPromptDraft(input: {
   assertLinkedTestCasesExist(input.linkedTestCases);
   const promptPayload = buildTestExecutionEffortPrompt({
     scope,
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
+    rankedKnowledgeKeys: input.rankedKnowledgeKeys,
     targetRequirement: input.targetRequirement,
     linkedTestCases: input.linkedTestCases,
     relatedWorkItems: input.relatedWorkItems ?? [],

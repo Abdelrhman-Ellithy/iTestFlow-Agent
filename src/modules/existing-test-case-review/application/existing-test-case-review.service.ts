@@ -31,6 +31,10 @@ export async function reviewExistingLinkedTestCases(input: {
   const scope = assertProjectScope(input.scope);
   const promptDraft = buildExistingTestCaseReviewPromptDraft({
     scope,
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
+    rankedKnowledgeKeys: input.rankedKnowledgeKeys,
     targetRequirement: input.targetRequirement,
     linkedTestCases: input.linkedTestCases,
     relatedWorkItems: input.relatedWorkItems ?? [],

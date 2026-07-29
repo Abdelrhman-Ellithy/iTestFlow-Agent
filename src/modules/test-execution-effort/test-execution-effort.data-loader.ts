@@ -55,6 +55,7 @@ export async function loadTestExecutionEffortData(input: {
     selectedContext: context.selectedContext,
     resolvedContextUsed: context.contextUsed,
     retrievalTopK: context.retrievalTopK,
+    rankedKnowledgeKeys: context.rankedKnowledgeKeys,
     projectKnowledgeBase: projectKnowledge.knowledgeBase,
     projectKnowledgeNotice: projectKnowledge.promptNotice,
     hasProjectContext: Boolean(context.selectedContext.length || context.relatedWorkItems.length || projectKnowledge.knowledgeBase),

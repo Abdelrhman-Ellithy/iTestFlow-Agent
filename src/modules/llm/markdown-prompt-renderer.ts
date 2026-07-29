@@ -835,7 +835,9 @@ function selectRelevantProjectKnowledge(input: {
   };
 
   const ordered = {
-    modules: applyOverride(ranked.modules, (item) => item.name, input.rankedOverride?.modules),
+    // Keys must match what the knowledge entry table stores as `entry_key`: the entry
+    // id for every category except glossary, which is keyed by term.
+    modules: applyOverride(ranked.modules, (item) => item.id, input.rankedOverride?.modules),
     businessRules: applyOverride(ranked.businessRules, (item) => item.id, input.rankedOverride?.businessRules),
     stateTransitions: applyOverride(ranked.stateTransitions, (item) => item.id, input.rankedOverride?.stateTransitions),
     glossary: applyOverride(ranked.glossary, (item) => item.term, input.rankedOverride?.glossary),

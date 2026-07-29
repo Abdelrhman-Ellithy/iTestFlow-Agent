@@ -91,6 +91,7 @@ export async function POST(request: Request) {
       // model, keeping the workspace top-K as a floor rather than a ceiling.
       maxInputTokens: provider.maxInputTokens,
       relatedWorkItemsFloor: data.retrievalTopK,
+      rankedKnowledgeKeys: data.rankedKnowledgeKeys ?? undefined,
       projectKnowledgeNotice: data.projectKnowledgeNotice,
       options,
     });
