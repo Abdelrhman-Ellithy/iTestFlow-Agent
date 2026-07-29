@@ -22,6 +22,7 @@ export type WorkflowBaselineMap = Partial<Record<WorkflowType, number>>;
 export type WorkspaceSettingsView = {
   retrievalTopK: number | null;
   maxOutputTokenCap: number | null;
+  modelInputTokenLimitOverride: number | null;
   llmRetryAttempts: number | null;
   externalLlmEnabled: boolean;
   manualBaselineMinutes: WorkflowBaselineMap | null;
@@ -33,6 +34,7 @@ export const DEFAULT_EXTERNAL_LLM_ENABLED = true;
 type WorkspaceSettingsRow = {
   retrieval_top_k: number | null;
   max_output_token_cap: number | null;
+  model_input_token_limit_override: number | null;
   llm_retry_attempts: number | null;
   external_llm_enabled: boolean | null;
   manual_baseline_minutes: unknown;
@@ -67,6 +69,7 @@ function toView(row: WorkspaceSettingsRow): WorkspaceSettingsView {
   return {
     retrievalTopK: row.retrieval_top_k,
     maxOutputTokenCap: row.max_output_token_cap,
+    modelInputTokenLimitOverride: row.model_input_token_limit_override,
     llmRetryAttempts: row.llm_retry_attempts,
     // The migration is NOT NULL, but only an explicit false should disable
     // External LLM if a malformed legacy row is encountered.
@@ -78,7 +81,8 @@ function toView(row: WorkspaceSettingsRow): WorkspaceSettingsView {
 
 export async function getWorkspaceSettings(workspaceId: string): Promise<WorkspaceSettingsView | null> {
   const row = await sqlGet<WorkspaceSettingsRow>(
-    `SELECT retrieval_top_k, max_output_token_cap, llm_retry_attempts, external_llm_enabled,
+    `SELECT retrieval_top_k, max_output_token_cap, model_input_token_limit_override,
+            llm_retry_attempts, external_llm_enabled,
             manual_baseline_minutes, review_baseline_minutes
        FROM workspace_settings
       WHERE workspace_id = @workspaceId
@@ -92,6 +96,7 @@ export async function upsertWorkspaceSettings(input: {
   workspaceId: string;
   retrievalTopK?: number | null;
   maxOutputTokenCap?: number | null;
+  modelInputTokenLimitOverride?: number | null;
   llmRetryAttempts?: number | null;
   externalLlmEnabled?: boolean;
   manualBaselineMinutes?: WorkflowBaselineMap | null;
@@ -123,6 +128,14 @@ export async function upsertWorkspaceSettings(input: {
   if (input.maxOutputTokenCap !== undefined) {
     addField("max_output_token_cap", "maxOutputTokenCap", "::int", input.maxOutputTokenCap);
   }
+  if (input.modelInputTokenLimitOverride !== undefined) {
+    addField(
+      "model_input_token_limit_override",
+      "modelInputTokenLimitOverride",
+      "::int",
+      input.modelInputTokenLimitOverride,
+    );
+  }
   if (input.llmRetryAttempts !== undefined) {
     addField("llm_retry_attempts", "llmRetryAttempts", "::int", input.llmRetryAttempts);
   }
@@ -151,7 +164,8 @@ export async function upsertWorkspaceSettings(input: {
      VALUES (${values.join(", ")})
      ON CONFLICT (workspace_id) DO UPDATE SET
        ${updates.join(",\n       ")}
-     RETURNING retrieval_top_k, max_output_token_cap, llm_retry_attempts, external_llm_enabled,
+     RETURNING retrieval_top_k, max_output_token_cap, model_input_token_limit_override,
+               llm_retry_attempts, external_llm_enabled,
                manual_baseline_minutes, review_baseline_minutes`,
     params,
   );

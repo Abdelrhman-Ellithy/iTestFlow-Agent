@@ -7,7 +7,13 @@ import {
   getWorkspaceSettings,
   upsertWorkspaceSettings,
 } from "@/modules/workspace/workspace-settings.service";
-import { DEFAULT_RETRY_ATTEMPTS, getMaxOutputTokenCapDefaultFromEnv, MAX_OUTPUT_TOKEN_CAP_OPTIONS, RETRY_ATTEMPT_OPTIONS } from "@/modules/llm/llm-defaults";
+import {
+  DEFAULT_RETRY_ATTEMPTS,
+  getMaxOutputTokenCapDefaultFromEnv,
+  MAX_OUTPUT_TOKEN_CAP_OPTIONS,
+  MODEL_INPUT_TOKEN_LIMIT_OVERRIDE_OPTIONS,
+  RETRY_ATTEMPT_OPTIONS,
+} from "@/modules/llm/llm-defaults";
 import { getRetrievalTopKFromEnv, TOP_K_MAX, TOP_K_MIN } from "@/modules/rag/retrieval-config";
 import {
   defaultReviewBaselines,
@@ -26,6 +32,7 @@ export const runtime = "nodejs";
  * server-resolved workspace.
  */
 const allowedCaps = MAX_OUTPUT_TOKEN_CAP_OPTIONS as readonly number[];
+const allowedInputLimits = MODEL_INPUT_TOKEN_LIMIT_OVERRIDE_OPTIONS as readonly number[];
 const allowedRetries = RETRY_ATTEMPT_OPTIONS as readonly number[];
 
 // Partial per-workflow map of minutes; null clears all overrides (inherit defaults).
@@ -53,6 +60,14 @@ const Schema = z
       })
       .nullable()
       .optional(),
+    modelInputTokenLimitOverride: z
+      .number()
+      .int()
+      .refine((value) => allowedInputLimits.includes(value), {
+        message: `Model input limit override must be one of ${MODEL_INPUT_TOKEN_LIMIT_OVERRIDE_OPTIONS.join(", ")}.`,
+      })
+      .nullable()
+      .optional(),
     externalLlmEnabled: z.boolean().optional(),
     manualBaselineMinutes: baselineMapSchema,
     reviewBaselineMinutes: baselineMapSchema,
@@ -61,6 +76,7 @@ const Schema = z
     (value) =>
       value.retrievalTopK !== undefined ||
       value.maxOutputTokenCap !== undefined ||
+      value.modelInputTokenLimitOverride !== undefined ||
       value.llmRetryAttempts !== undefined ||
       value.externalLlmEnabled !== undefined ||
       value.manualBaselineMinutes !== undefined ||
@@ -73,6 +89,7 @@ function defaultsPayload() {
     retrievalTopKDefault: getRetrievalTopKFromEnv(),
     maxOutputTokenCapDefault: getMaxOutputTokenCapDefaultFromEnv(),
     maxOutputTokenCapOptions: MAX_OUTPUT_TOKEN_CAP_OPTIONS,
+    modelInputTokenLimitOverrideOptions: MODEL_INPUT_TOKEN_LIMIT_OVERRIDE_OPTIONS,
     topKMin: TOP_K_MIN,
     topKMax: TOP_K_MAX,
     retryAttemptsDefault: DEFAULT_RETRY_ATTEMPTS,
@@ -102,6 +119,7 @@ export async function GET() {
       settings: settings ?? {
         retrievalTopK: null,
         maxOutputTokenCap: null,
+        modelInputTokenLimitOverride: null,
         llmRetryAttempts: null,
         externalLlmEnabled: DEFAULT_EXTERNAL_LLM_ENABLED,
         manualBaselineMinutes: null,
@@ -135,6 +153,7 @@ export async function PUT(request: Request) {
     workspaceId: context.workspace.id,
     retrievalTopK: parsed.data.retrievalTopK,
     maxOutputTokenCap: parsed.data.maxOutputTokenCap,
+    modelInputTokenLimitOverride: parsed.data.modelInputTokenLimitOverride,
     llmRetryAttempts: parsed.data.llmRetryAttempts,
     externalLlmEnabled: parsed.data.externalLlmEnabled,
     manualBaselineMinutes: parsed.data.manualBaselineMinutes,

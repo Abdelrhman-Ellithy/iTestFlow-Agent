@@ -42,6 +42,7 @@ describe("workspace settings routes", () => {
       settings: {
         retrievalTopK: null,
         maxOutputTokenCap: null,
+        modelInputTokenLimitOverride: null,
         llmRetryAttempts: null,
         externalLlmEnabled: true,
       },
@@ -52,6 +53,7 @@ describe("workspace settings routes", () => {
     mocks.getWorkspaceSettings.mockResolvedValue({
       retrievalTopK: null,
       maxOutputTokenCap: null,
+      modelInputTokenLimitOverride: null,
       llmRetryAttempts: null,
       externalLlmEnabled: false,
       manualBaselineMinutes: null,
@@ -68,6 +70,7 @@ describe("workspace settings routes", () => {
     const response = await PUT(jsonRequest("/api/workspace/settings", {
       retrievalTopK: 12,
       maxOutputTokenCap: 16000,
+      modelInputTokenLimitOverride: 128000,
       llmRetryAttempts: 2,
       externalLlmEnabled: false,
     }));
@@ -80,6 +83,7 @@ describe("workspace settings routes", () => {
         updatedByUserId: "admin-1",
         retrievalTopK: 12,
         maxOutputTokenCap: 16000,
+        modelInputTokenLimitOverride: 128000,
         llmRetryAttempts: 2,
         externalLlmEnabled: false,
       }),
@@ -89,6 +93,7 @@ describe("workspace settings routes", () => {
   it.each([
     [{}, "Provide a setting to update."],
     [{ maxOutputTokenCap: 17000 }, "LLM output cap must be one of"],
+    [{ modelInputTokenLimitOverride: 17000 }, "Model input limit override must be one of"],
     [{ retrievalTopK: 1000 }, "less than or equal to 25"],
     [{ externalLlmEnabled: "false" }, "Expected boolean"],
   ])("rejects invalid settings without writing", async (body, message) => {

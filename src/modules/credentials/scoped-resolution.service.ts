@@ -167,7 +167,7 @@ export async function getUserLLMProvider(ctx: WorkflowContext): Promise<LLMProvi
     apiKey: llm.apiKey,
     model: llm.model,
     baseUrl: llm.baseUrl,
-    maxInputTokens: llm.maxInputTokens,
+    maxInputTokens: wsSettings?.modelInputTokenLimitOverride ?? undefined,
     maxOutputTokenCap: wsSettings?.maxOutputTokenCap ?? getMaxOutputTokenCapDefaultFromEnv(),
     retryAttempts: wsSettings?.llmRetryAttempts ?? DEFAULT_RETRY_ATTEMPTS,
   });

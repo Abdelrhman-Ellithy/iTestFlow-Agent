@@ -103,6 +103,7 @@ beforeEach(() => {
     model: "gpt-test",
     apiKey: "sk-secret",
     baseUrl: "https://llm.example",
+    maxInputTokens: 32000,
   });
   mocks.markUserAzurePatExpired.mockResolvedValue(undefined);
   mocks.createLLMProvider.mockReturnValue(fakeLlmProvider());
@@ -255,8 +256,12 @@ describe("getUserLLMProvider", () => {
     expect(mocks.createLLMProvider).not.toHaveBeenCalled();
   });
 
-  it("builds the provider from the user's credentials and workspace-level caps", async () => {
-    mocks.getWorkspaceSettings.mockResolvedValue({ maxOutputTokenCap: 64000, llmRetryAttempts: 3 });
+  it("builds the provider from the user's credentials and workspace-level limits", async () => {
+    mocks.getWorkspaceSettings.mockResolvedValue({
+      maxOutputTokenCap: 64000,
+      modelInputTokenLimitOverride: 128000,
+      llmRetryAttempts: 3,
+    });
     const provider = fakeLlmProvider();
     mocks.createLLMProvider.mockReturnValue(provider);
 
@@ -267,6 +272,7 @@ describe("getUserLLMProvider", () => {
       apiKey: "sk-secret",
       model: "gpt-test",
       baseUrl: "https://llm.example",
+      maxInputTokens: 128000,
       maxOutputTokenCap: 64000,
       retryAttempts: 3,
     });

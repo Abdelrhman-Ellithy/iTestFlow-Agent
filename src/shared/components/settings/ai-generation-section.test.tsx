@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AiGenerationSection } from "./ai-generation-section";
@@ -28,10 +28,17 @@ const credentialStatus = {
 
 const workspaceSettings = {
   workspaceId: "ws_1",
-  settings: { retrievalTopK: null, maxOutputTokenCap: null, llmRetryAttempts: null, externalLlmEnabled: true },
+  settings: {
+    retrievalTopK: null,
+    maxOutputTokenCap: null,
+    modelInputTokenLimitOverride: null,
+    llmRetryAttempts: null,
+    externalLlmEnabled: true,
+  },
   defaults: {
     maxOutputTokenCapDefault: 32000,
     maxOutputTokenCapOptions: [16000, 32000, 64000],
+    modelInputTokenLimitOverrideOptions: [16000, 32000, 64000, 128000, 200000, 1000000, 2000000],
     retryAttemptsDefault: 1,
     retryAttemptsOptions: [0, 1, 2, 3],
   },
@@ -139,6 +146,58 @@ describe("AiGenerationSection", () => {
     });
   });
 
+  it("uses workspace-owned presets for the model input limit override", async () => {
+    render(<AiGenerationSection />);
+
+    await screen.findByRole("heading", { name: "Workspace AI controls" });
+    expect(screen.queryByLabelText("Model Input Limit Override (optional)")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Automatic" })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.click(screen.getByRole("button", { name: "128,000" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT");
+      expect(JSON.parse(String(putCall?.[1]?.body))).toEqual({
+        modelInputTokenLimitOverride: 128000,
+      });
+    });
+  });
+
+  it("can return the workspace input limit to automatic capability detection", async () => {
+    const configuredSettings = {
+      ...workspaceSettings,
+      settings: { ...workspaceSettings.settings, modelInputTokenLimitOverride: 128000 },
+    };
+    fetchMock.mockImplementation((input, init) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      if (url.includes("/api/settings/credentials")) return jsonResponse(credentialStatus);
+      if (url.includes("/api/workspace/settings")) {
+        if (init?.method === "PUT") {
+          return jsonResponse({
+            ...configuredSettings,
+            settings: { ...configuredSettings.settings, ...JSON.parse(String(init.body)) },
+          });
+        }
+        return jsonResponse(configuredSettings);
+      }
+      return jsonResponse({ error: `Unexpected request: ${url}` }, 500);
+    });
+
+    render(<AiGenerationSection />);
+
+    await screen.findByRole("heading", { name: "Workspace AI controls" });
+    fireEvent.click(screen.getByRole("button", { name: "Automatic" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const putCall = fetchMock.mock.calls.find(([, init]) => init?.method === "PUT");
+      expect(JSON.parse(String(putCall?.[1]?.body))).toEqual({
+        modelInputTokenLimitOverride: null,
+      });
+    });
+  });
+
   it("uses the refreshed baseline so later cap and retry saves do not resend External LLM", async () => {
     render(<AiGenerationSection />);
 
@@ -151,8 +210,8 @@ describe("AiGenerationSection", () => {
       expect(screen.getByRole("checkbox", { name: "Allow External LLM" })).not.toBeChecked();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /64/ }));
-    fireEvent.click(screen.getByRole("button", { name: /^2/ }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Max output tokens" })).getByRole("button", { name: "64,000" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Retry attempts on network failure" })).getByRole("button", { name: /^2/ }));
     fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
 
     await waitFor(() => {

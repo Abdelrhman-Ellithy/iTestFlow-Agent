@@ -182,6 +182,22 @@ describe("PUT /api/settings/credentials", () => {
     });
   });
 
+  it("rejects the retired per-user model input limit field", async () => {
+    const response = await PUT(
+      jsonRequest("PUT", {
+        llm: {
+          provider: "openai",
+          model: "gpt-4.1",
+          apiKey: "sk-new",
+          maxInputTokens: 128000,
+        },
+      }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(saveUserLlmSettings).not.toHaveBeenCalled();
+  });
+
   it("rate-limits with 429 and Retry-After before touching the session or credentials", async () => {
     checkRateLimit.mockResolvedValue({ allowed: false, retryAfterSeconds: 45 });
 
