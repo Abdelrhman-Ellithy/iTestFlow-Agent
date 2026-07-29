@@ -391,6 +391,7 @@ function selectionFor(builder: typeof buildTestCaseGenerationMarkdownPrompt, opt
     glossary: selected?.glossary.length ?? 0,
     crossDependencies: selected?.crossDependencies.length ?? 0,
     ruleIds: selected?.businessRules.map((rule) => rule.id) ?? [],
+    moduleIds: selected?.modules.map((module) => module.id) ?? [],
     total: selected
       ? selected.modules.length + selected.businessRules.length + selected.stateTransitions.length
         + selected.glossary.length + selected.crossDependencies.length
@@ -408,8 +409,8 @@ describe("compiled knowledge selection at corpus scale", () => {
     });
 
     // The failure this guards against is uniform round-robin, under which every
-    // category takes one slot per pass and 1,000 business rules end up with the same
-    // count as 200 glossary terms.
+    // category takes one slot per pass and 1,000 business rules end up with roughly the
+    // same count as 200 glossary terms.
     expect(selection.businessRules).toBeGreaterThan(selection.glossary * 2);
     expect(selection.businessRules).toBeGreaterThan(selection.modules * 2);
     expect(selection.stateTransitions).toBeGreaterThan(selection.glossary);
@@ -417,7 +418,7 @@ describe("compiled knowledge selection at corpus scale", () => {
     expect(testConditions / selection.total).toBeGreaterThan(0.6);
   });
 
-  it("keeps every category represented even when one dominates", () => {
+  it("keeps every category represented when the window allows it", () => {
     const selection = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
       projectKnowledgeBase: knowledge,
       maxInputTokens: 128_000,
@@ -429,16 +430,19 @@ describe("compiled knowledge selection at corpus scale", () => {
   });
 
   it("weights the same corpus differently for requirement analysis", () => {
+    // Sized so no category is saturated; at a very large window both profiles simply
+    // send everything and the weighting is unobservable.
     const design = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
-      projectKnowledgeBase: knowledge, maxInputTokens: 128_000,
+      projectKnowledgeBase: knowledge, maxInputTokens: 16_000,
     });
     const analysis = selectionFor(buildRequirementAnalysisMarkdownPrompt, {
-      projectKnowledgeBase: knowledge, maxInputTokens: 128_000,
+      projectKnowledgeBase: knowledge, maxInputTokens: 16_000,
     });
 
     // Analysis is about scope and impact, so structure earns more room and rules less.
     expect(analysis.modules).toBeGreaterThan(design.modules);
     expect(analysis.crossDependencies).toBeGreaterThan(design.crossDependencies);
+    expect(analysis.glossary).toBeGreaterThan(design.glossary);
     expect(analysis.businessRules).toBeLessThan(design.businessRules);
   });
 
@@ -450,37 +454,54 @@ describe("compiled knowledge selection at corpus scale", () => {
       projectKnowledgeBase: knowledge, maxInputTokens: 200_000,
     });
 
-    expect(large.businessRules).toBeGreaterThan(small.businessRules * 3);
     expect(small.businessRules).toBeGreaterThan(0);
+    expect(large.businessRules).toBeGreaterThan(small.businessRules * 3);
   });
 
-  it("does not let per-category floors overrun the knowledge budget", () => {
-    // 4,000 tokens leaves roughly 1,260 for knowledge; the floors (22 entries) cost
-    // far more than that. Without the ceiling they would be taken anyway and evict the
-    // work item under test from the prompt.
+  it("does not discard entries that share no wording with the work item", () => {
+    // No module, transition, glossary or dependency in this corpus mentions the target
+    // requirement, so all of them score zero on keyword overlap. They used to be
+    // dropped outright beyond the first three, which capped those categories at three
+    // entries on any model. A large window must now be able to carry the whole corpus.
     const selection = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
-      projectKnowledgeBase: knowledge, maxInputTokens: 4_000,
+      projectKnowledgeBase: knowledge, maxInputTokens: 200_000,
     });
-    const floorTotal = 4 + 6 + 4 + 6 + 2;
 
-    expect(selection.total).toBeGreaterThan(0);
-    expect(selection.total).toBeLessThan(floorTotal);
+    expect(selection.modules).toBe(knowledge.modules.length);
+    expect(selection.crossDependencies).toBe(knowledge.crossDependencies.length);
+    expect(selection.stateTransitions).toBe(knowledge.stateTransitions.length);
+  });
+
+  it("does not let per-category floors overrun the model window", () => {
+    // A 4k window cannot afford all 22 floor entries. Unbounded floors would take them
+    // anyway and crowd out the work item the prompt exists to reason about.
+    const maxInputTokens = 4_000;
+    const result = buildTestCaseGenerationMarkdownPrompt({
+      currentProject, targetRequirement, outputContract,
+      projectKnowledgeBase: knowledge, maxInputTokens,
+    });
+    const knowledgeTokens = JSON.stringify(result.relevantProjectKnowledgeBase).length / 4;
+
+    expect(knowledgeTokens).toBeGreaterThan(0);
+    expect(knowledgeTokens).toBeLessThan(maxInputTokens * 0.5);
+    expect(result.prompt).toContain("Checkout");
   });
 
   it("honours a semantic ranking override over keyword order", () => {
     // Entries the override does not name keep their keyword order behind those it does,
     // so a partial override reorders without dropping anything.
-    const override = { businessRules: ["rule-900", "rule-901", "rule-902"] };
+    const override = { modules: ["mod-57", "mod-58", "mod-59"] };
     const selection = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
-      projectKnowledgeBase: knowledge, maxInputTokens: 128_000, rankedKnowledgeKeys: override,
+      projectKnowledgeBase: knowledge, maxInputTokens: 16_000, rankedKnowledgeKeys: override,
     });
-
-    expect(selection.ruleIds.slice(0, 3)).toEqual(["rule-900", "rule-901", "rule-902"]);
-
     const withoutOverride = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
-      projectKnowledgeBase: knowledge, maxInputTokens: 128_000,
+      projectKnowledgeBase: knowledge, maxInputTokens: 16_000,
     });
-    expect(withoutOverride.ruleIds).not.toContain("rule-900");
-    expect(selection.businessRules).toBe(withoutOverride.businessRules);
+
+    expect(selection.moduleIds.slice(0, 3)).toEqual(["mod-57", "mod-58", "mod-59"]);
+    expect(withoutOverride.moduleIds).not.toContain("mod-57");
+    // Ordering only: the override changes which entries survive the budget, never how
+    // many.
+    expect(selection.modules).toBe(withoutOverride.modules);
   });
 });

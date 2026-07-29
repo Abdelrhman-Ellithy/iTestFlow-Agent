@@ -941,7 +941,12 @@ function rankKnowledgeItems<TItem extends { sourceWorkItemIds?: string[] }>(
       index,
       score: scoreKnowledgeItem(item, queryTerms, prioritySourceIds, textForItem(item)),
     }))
-    .filter((entry) => entry.score > 0 || entry.index < 3)
+    // Ranking orders; it must not exclude. Entries that share no term with the work
+    // item used to be dropped here unless they were in the first three, which capped
+    // modules and dependencies at three on any model — a hard filter applied before the
+    // token budget, and before semantic ranking could speak for an entry that keyword
+    // overlap cannot see. Zero-scoring entries now sort last instead, so a small window
+    // still never reaches them and a large one can.
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .map((entry) => entry.item);
 }

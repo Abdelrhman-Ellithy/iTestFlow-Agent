@@ -23,8 +23,7 @@ describe("dbg", () => {
         out.push(`${tokens} ${label} ` + JSON.stringify({ m: s?.modules.length, br: s?.businessRules.length, st: s?.stateTransitions.length, g: s?.glossary.length, cd: s?.crossDependencies.length }));
       }
     }
-    writeFileSync("dbg-out.txt", out.join("
-"));
+    writeFileSync("dbg-out.txt", out.join("\n"));
     expect(true).toBe(true);
   });
 });
