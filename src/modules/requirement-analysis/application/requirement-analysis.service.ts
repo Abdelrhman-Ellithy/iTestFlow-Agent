@@ -27,6 +27,8 @@ export async function runRequirementAnalysis(input: {
   maxInputTokens?: number;
   /** Workspace retrieval top-K, honoured as a floor for related work items. */
   relatedWorkItemsFloor?: number;
+  /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
+  rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   extraInstructions?: string;
@@ -98,6 +100,8 @@ export function buildRequirementAnalysisPromptDraft(input: {
   maxInputTokens?: number;
   /** Workspace retrieval top-K, honoured as a floor for related work items. */
   relatedWorkItemsFloor?: number;
+  /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
+  rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   extraInstructions?: string;
@@ -109,6 +113,7 @@ export function buildRequirementAnalysisPromptDraft(input: {
     // Sizes how much compiled knowledge and related context the prompt carries.
     maxInputTokens: input.maxInputTokens,
     relatedWorkItemsFloor: input.relatedWorkItemsFloor,
+    rankedKnowledgeKeys: input.rankedKnowledgeKeys,
     currentProject: {
       azureProjectId: scope.azureProjectId,
       azureProjectName: scope.azureProjectName,
