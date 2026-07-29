@@ -1,4 +1,4 @@
-import { canonicalizeProjectKnowledgeKey } from "./project-knowledge-contracts";
+import { buildAliasIndex, entityAliasKey, resolveAlias, type AliasIndex } from "./entity-aliases";
 import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
 
 /**
@@ -6,19 +6,19 @@ import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
  * a work item is actually connected to.
  *
  * Similarity alone answers "does this text resemble that text", which is not the same
- * question. Two modules can be phrased nothing alike and still be inseparable — a
- * change request depends on a waybill, which depends on a transport order, which
- * depends on the master plan — and a rule about the far end of that chain is relevant
- * precisely because of the chain, not because of its wording. Equally, a module can
- * read as similar to a work item and have nothing to do with it.
+ * question. Two modules can be phrased nothing alike and still be inseparable — a claim
+ * is raised against a shipment, a shipment is issued against an order, an order is drawn
+ * from a schedule — and a rule about the far end of that chain is relevant precisely
+ * because of the chain, not because of its wording. Equally, a module can read as
+ * similar to a work item and have nothing to do with it.
  *
  * Every edge here is read from the project's own compiled knowledge, so the graph is
  * whatever the board actually is. Boards differ sharply in which edges they carry: on
- * one real project 114 of 114 business rules had provenance links to work items and 76
- * carried a module, while the compiler had found only 2 declared module-to-module
- * dependencies across 39 modules. A design leaning on any single edge type would work
- * on some boards and do nothing on others, so all of them contribute and whichever
- * exists carries the weight.
+ * one measured project every business rule had a provenance link to a work item and two
+ * thirds named a module, while the compiler had found almost no declared
+ * module-to-module dependencies at all. Another board can be the reverse. A design
+ * leaning on any single edge type would work on some boards and do nothing on others,
+ * so all of them contribute and whichever exists carries the weight.
  *
  * Edges:
  * - **entry -> work item** (`sourceWorkItemIds`): the entry was extracted from that
@@ -31,6 +31,11 @@ import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
  * - **work item -> glossary term**: the term appearing in the item's text. Glossary
  *   entries carry no module, so naming is the only structural edge they have — and a
  *   work item that uses a term is exactly the case where its definition is needed.
+ *
+ * Module identity is resolved through `entity-aliases` before any of this, because a
+ * project names one module several ways and unresolved names become separate nodes. A
+ * singular and its plural as two nodes is worse than no graph: rules filed under one
+ * are unreachable from the other, and the traversal reports them unconnected.
  */
 
 export type OntologyCategory =
@@ -50,6 +55,7 @@ export type KnowledgeOntology = {
   moduleEntries: Map<string, string[]>;
   moduleNeighbours: Map<string, Set<string>>;
   moduleNamesByKey: Map<string, string>;
+  moduleAliases: Map<string, string[]>;
   workItemEntries: Map<string, string[]>;
   glossaryTerms: Map<string, string>;
 };
@@ -59,13 +65,21 @@ const EMPTY_ONTOLOGY: KnowledgeOntology = {
   moduleEntries: new Map(),
   moduleNeighbours: new Map(),
   moduleNamesByKey: new Map(),
+  moduleAliases: new Map(),
   workItemEntries: new Map(),
   glossaryTerms: new Map(),
 };
 
-function moduleKey(name: string | undefined | null) {
-  const trimmed = name?.trim();
-  return trimmed ? canonicalizeProjectKnowledgeKey(trimmed) : null;
+function moduleKeyResolver(knowledgeBase: ProjectKnowledgeBase) {
+  // Every name the board uses for a module, wherever it says it: the module list, the
+  // rules and transitions that cite one, and both ends of every declared dependency.
+  const index = buildAliasIndex([
+    ...knowledgeBase.modules.map((entry) => entry.name),
+    ...knowledgeBase.businessRules.map((entry) => entry.moduleName ?? ""),
+    ...knowledgeBase.stateTransitions.map((entry) => entry.moduleName ?? ""),
+    ...knowledgeBase.crossDependencies.flatMap((entry) => [entry.sourceModule, entry.targetModule]),
+  ]);
+  return { index, key: (name: string | undefined | null) => resolveAlias(index, name) };
 }
 
 function push(index: Map<string, string[]>, key: string, value: string) {
@@ -81,11 +95,13 @@ function link(index: Map<string, Set<string>>, from: string, to: string) {
 export function buildKnowledgeOntology(knowledgeBase: ProjectKnowledgeBase | null | undefined): KnowledgeOntology {
   if (!knowledgeBase) return EMPTY_ONTOLOGY;
 
+  const { index: aliasIndex, key: moduleKey } = moduleKeyResolver(knowledgeBase);
   const ontology: KnowledgeOntology = {
     entryModule: new Map(),
     moduleEntries: new Map(),
     moduleNeighbours: new Map(),
     moduleNamesByKey: new Map(),
+    moduleAliases: new Map(),
     workItemEntries: new Map(),
     glossaryTerms: new Map(),
   };
@@ -107,10 +123,17 @@ export function buildKnowledgeOntology(knowledgeBase: ProjectKnowledgeBase | nul
     }
   };
 
+  for (const [name, key] of aliasIndex.canonicalKeyByName) {
+    // Every surface form is retained as an anchor phrase, not just the canonical one:
+    // a work item naming the plural must anchor the same node as one naming the
+    // singular, and an abbreviation the same node as its expansion.
+    push(ontology.moduleAliases, key, name);
+  }
+
   for (const projectModule of knowledgeBase.modules) {
     const key = moduleKey(projectModule.name);
     if (!key) continue;
-    ontology.moduleNamesByKey.set(key, projectModule.name);
+    ontology.moduleNamesByKey.set(key, aliasIndex.displayNameByKey.get(key) ?? projectModule.name);
     // A module is a member of itself, so anchoring a module also selects its own entry.
     attach("modules", projectModule.id, key, projectModule.sourceWorkItemIds);
   }
@@ -152,10 +175,10 @@ export function buildKnowledgeOntology(knowledgeBase: ProjectKnowledgeBase | nul
 /**
  * How far dependency edges are followed away from the anchored modules.
  *
- * One hop is too little to express "a change request depends on a waybill, which
- * depends on a transport order"; unbounded traversal reaches the whole board on any
- * well-connected graph and stops discriminating. Three keeps a chain of that shape
- * intact while still ending somewhere.
+ * One hop is too little to express "a claim depends on a shipment, which depends on an
+ * order"; unbounded traversal reaches the whole board on any well-connected graph and
+ * stops discriminating. Three keeps a chain of that shape intact while still ending
+ * somewhere.
  */
 export const MAX_DEPENDENCY_HOPS = 3;
 
@@ -196,14 +219,16 @@ export function resolveConnectedEntries(
 
   // Naming: a module the work item talks about, or files itself under. Area paths are
   // split on their separators so "Portal\\Activity Tracker" anchors Activity Tracker.
-  const haystack = ` ${anchors.text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
+  // Normalised the same way names are, so a work item naming a module in the plural
+  // matches the module registered in the singular.
+  const haystack = ` ${entityAliasKey(anchors.text)} `;
   const mentions = (value: string) => {
-    const needle = value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const needle = entityAliasKey(value);
     // Two characters match too much to be evidence of anything.
     return needle.length >= 3 && haystack.includes(` ${needle} `);
   };
-  for (const [key, name] of ontology.moduleNamesByKey) {
-    if (mentions(name)) anchoredModules.add(key);
+  for (const [key, aliases] of ontology.moduleAliases) {
+    if (aliases.some(mentions)) anchoredModules.add(key);
   }
   // A term the work item uses is a term the work item needs defined.
   for (const [entryId, term] of ontology.glossaryTerms) {

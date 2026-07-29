@@ -105,3 +105,61 @@ describe("project knowledge name similarity", () => {
     expect(areNamesSimilar("cart", "card")).toBe(false);
   });
 });
+
+describe("entity naming fragmentation", () => {
+  it("flags a singular and a plural spelling of one module", () => {
+    // Word-overlap similarity cannot see this: the two names share no whole word, so
+    // each module's rules and evidence sit in separate entries indefinitely.
+    const issues = collectIssues(knowledgeBase({
+      modules: [moduleEntry("mod-a", "Shipment", "10"), moduleEntry("mod-b", "Shipments", "20")],
+    }));
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ issueType: "similar_name", category: "module" });
+    expect(issues[0].title).toContain("Shipment");
+    expect(issues[0].entryKey).toBe("mod-a | mod-b");
+    expect(issues[0].sourceWorkItemIds.sort()).toEqual(["10", "20"]);
+  });
+
+  it("flags the same fragmentation across categories", () => {
+    const issues = collectIssues(knowledgeBase({
+      modules: [moduleEntry("mod-a", "Shipment")],
+      glossary: [glossaryTerm("Shipments")],
+    }));
+
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ category: "cross_category" });
+  });
+
+  it("stays silent when a project spells one entity consistently", () => {
+    expect(collectIssues(knowledgeBase({
+      modules: [moduleEntry("mod-a", "Shipment"), moduleEntry("mod-b", "Billing")],
+    }))).toEqual([]);
+  });
+
+  it("reports an abbreviation that could expand two ways", () => {
+    // Retrieval refuses to guess which expansion was meant, so the ambiguity has to
+    // reach a person rather than being silently resolved either way.
+    const issues = collectIssues(knowledgeBase({
+      modules: [
+        moduleEntry("mod-st", "ST"),
+        moduleEntry("mod-track", "Shipment Tracking"),
+        moduleEntry("mod-terms", "Settlement Terms"),
+      ],
+    }));
+
+    const ambiguous = issues.filter((issue) => issue.title.startsWith("Ambiguous abbreviation"));
+    expect(ambiguous).toHaveLength(1);
+    expect(ambiguous[0].title).toContain("ST");
+    expect(ambiguous[0].message).toContain("shipment tracking");
+  });
+
+  it("does not report an abbreviation with a single expansion", () => {
+    // That one resolves automatically, so there is nothing for a person to decide.
+    const issues = collectIssues(knowledgeBase({
+      modules: [moduleEntry("mod-st", "ST"), moduleEntry("mod-track", "Shipment Tracking")],
+    }));
+
+    expect(issues.filter((issue) => issue.title.startsWith("Ambiguous abbreviation"))).toEqual([]);
+  });
+});

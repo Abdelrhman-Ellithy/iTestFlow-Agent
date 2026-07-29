@@ -15,18 +15,18 @@ describe("buildRetrievalQueryWithHistory", () => {
   const assistant = (content: string) => ({ role: "assistant" as const, content });
 
   it("returns the question unchanged when there is no history", () => {
-    expect(buildRetrievalQueryWithHistory("what about BCR submitter ?")).toBe("what about BCR submitter ?");
+    expect(buildRetrievalQueryWithHistory("what about the other role ?")).toBe("what about the other role ?");
     expect(buildRetrievalQueryWithHistory("first question", [])).toBe("first question");
   });
 
   it("folds recent user turns in front of a follow-up", () => {
-    const result = buildRetrievalQueryWithHistory("what about BCR submitter ?", [
-      user("what are all the roles and persona exist in the Fuel transportation module ?"),
+    const result = buildRetrievalQueryWithHistory("what about the other role ?", [
+      user("what are all the roles and personas in the billing module ?"),
     ]);
     expect(result).toContain("roles and persona");
-    expect(result).toContain("Fuel transportation");
+    expect(result).toContain("billing module");
     // The current question is still present and last, so it dominates the encoding.
-    expect(result.endsWith("what about BCR submitter ?")).toBe(true);
+    expect(result.endsWith("what about the other role ?")).toBe(true);
   });
 
   it("ignores assistant turns", () => {

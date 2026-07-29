@@ -9,10 +9,10 @@ import { ontologyEntryId } from "./knowledge-ontology";
  * 1. **It stands out semantically.** Measured against the whole knowledge base's own
  *    similarity spread, not each category's. Per-category bars were tried and are the
  *    wrong instrument: they are relative to a category, so a category with nothing to
- *    say about the work item still promotes its own least-bad member. On a bug about
- *    attachment visibility, a project's two module dependencies — swap requests and
- *    vehicle management, neither related — ranked 1st and 2nd of their category and
- *    were sent as though relevant. Against the global spread they are simply low.
+ *    say about the work item still promotes its own least-bad member. Measured on a real
+ *    board, the two module dependencies it had were unrelated to the work item under
+ *    analysis and still ranked 1st and 2nd of their category, so both were sent as
+ *    though relevant. Against the global spread they are simply low.
  *
  * 2. **It is connected.** The project's own ontology says the entry belongs to the work
  *    item's module, was extracted from it or something it links to, or sits along a
@@ -20,10 +20,9 @@ import { ontologyEntryId } from "./knowledge-ontology";
  *    reads nothing like the work item — and it is the only signal that adapts to a board
  *    whose modules depend on each other in ways no wording reveals.
  *
- * The second is not a tiebreak. On a real work item titled "Parent Task Cannot Be
- * Closed When a Subtask Is Rejected", the module the item is *in* scored 0.710 against
- * a global bar of 0.724 — similarity alone dropped the one module that mattered while
- * keeping rules from elsewhere.
+ * The second is not a tiebreak. On a measured work item, the module the item belongs to
+ * scored just under the global bar — 0.710 against 0.724 — so similarity alone dropped
+ * the one module that mattered while keeping rules from unrelated parts of the board.
  *
  * No threshold here is tuned to a corpus. The bar is a position within whatever spread
  * the project's own knowledge produces, so it travels to a board with different

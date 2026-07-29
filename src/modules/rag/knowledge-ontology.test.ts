@@ -9,11 +9,11 @@ import {
 import type { ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema";
 
 /**
- * A board where modules genuinely depend on one another: a change request is raised
- * against a waybill, a waybill is issued against a transport order, and a transport
- * order is drawn from the master plan. Nothing in the wording of a master plan rule
- * resembles a change request work item — the chain is the only thing that connects
- * them, and it is the project's own compiled knowledge that states it.
+ * A board where modules genuinely depend on one another: a claim is raised against a
+ * shipment, a shipment is issued against an order, and an order is drawn from a
+ * schedule. Nothing in the wording of a scheduling rule resembles a claim work item —
+ * the chain is the only thing that connects them, and it is the project's own compiled
+ * knowledge that states it.
  */
 function chainedBoard(): ProjectKnowledgeBase {
   const projectModule = (id: string, name: string, workItems: string[] = []) => ({
@@ -30,34 +30,34 @@ function chainedBoard(): ProjectKnowledgeBase {
 
   return {
     modules: [
-      projectModule("mod-bcr", "BCR"),
-      projectModule("mod-waybill", "Waybill"),
-      projectModule("mod-to", "PO / TO Request"),
-      projectModule("mod-plan", "Master Plan"),
-      projectModule("mod-helpdesk", "HelpDesk"),
+      projectModule("mod-claims", "Claims"),
+      projectModule("mod-shipment", "Shipment"),
+      projectModule("mod-order", "Order Request"),
+      projectModule("mod-schedule", "Schedule"),
+      projectModule("mod-billing", "Billing"),
     ],
     businessRules: [
-      rule("rule-bcr", "BCR", ["900"]),
-      rule("rule-waybill", "Waybill"),
-      rule("rule-to", "PO / TO Request"),
-      rule("rule-plan", "Master Plan"),
-      rule("rule-helpdesk", "HelpDesk"),
+      rule("rule-claims", "Claims", ["900"]),
+      rule("rule-shipment", "Shipment"),
+      rule("rule-order", "Order Request"),
+      rule("rule-schedule", "Schedule"),
+      rule("rule-billing", "Billing"),
       rule("rule-orphan", ""),
     ],
     stateTransitions: [
       {
-        id: "st-bcr", workflowName: "Change Request Workflow", fromState: "Draft", toState: "Raised",
-        triggerOrCondition: "Submitted", actor: "Requester", moduleName: "BCR",
+        id: "st-claims", workflowName: "Claim Workflow", fromState: "Draft", toState: "Raised",
+        triggerOrCondition: "Submitted", actor: "Requester", moduleName: "Claims",
         sourceWorkItemIds: [], evidence: "transition evidence",
       },
     ],
     glossary: [
-      { term: "Waybill", type: "term", definition: "A transport document", sourceWorkItemIds: ["901"], evidence: "g" },
+      { term: "Shipment", type: "term", definition: "A dispatched consignment", sourceWorkItemIds: ["901"], evidence: "g" },
     ],
     crossDependencies: [
-      dependency("dep-bcr-waybill", "BCR", "Waybill"),
-      dependency("dep-waybill-to", "Waybill", "PO / TO Request"),
-      dependency("dep-to-plan", "PO / TO Request", "Master Plan"),
+      dependency("dep-claims-shipment", "Claims", "Shipment"),
+      dependency("dep-shipment-order", "Shipment", "Order Request"),
+      dependency("dep-order-schedule", "Order Request", "Schedule"),
     ],
   } as ProjectKnowledgeBase;
 }
@@ -67,17 +67,17 @@ describe("buildKnowledgeOntology", () => {
     const ontology = buildKnowledgeOntology(chainedBoard());
 
     expect(ontology.moduleNamesByKey.size).toBe(5);
-    expect(ontology.workItemEntries.get("900")).toContain(ontologyEntryId("businessRules", "rule-bcr"));
-    expect(ontology.workItemEntries.get("901")).toContain(ontologyEntryId("glossary", "Waybill"));
-    expect([...(ontology.moduleNeighbours.get("bcr") ?? [])]).toContain("waybill");
+    expect(ontology.workItemEntries.get("900")).toContain(ontologyEntryId("businessRules", "rule-claims"));
+    expect(ontology.workItemEntries.get("901")).toContain(ontologyEntryId("glossary", "Shipment"));
+    expect([...(ontology.moduleNeighbours.get("claim") ?? [])]).toContain("shipment");
   });
 
   it("treats a dependency as bidirectional", () => {
-    // A dependency is a relationship. A work item in Waybill is as entitled to know
-    // that BCR depends on it as the reverse.
+    // A dependency is a relationship. A work item in the module being depended on is
+    // as entitled to know about the dependency as one in the module that declares it.
     const ontology = buildKnowledgeOntology(chainedBoard());
 
-    expect([...(ontology.moduleNeighbours.get("waybill") ?? [])]).toContain("bcr");
+    expect([...(ontology.moduleNeighbours.get("shipment") ?? [])]).toContain("claim");
   });
 
   it("survives a knowledge base with no relationships at all", () => {
@@ -97,41 +97,41 @@ describe("resolveConnectedEntries", () => {
   const ontology = buildKnowledgeOntology(chainedBoard());
 
   it("follows a dependency chain across several modules", () => {
-    // The whole point: a Master Plan rule is three dependency hops from a BCR work
+    // The whole point: a scheduling rule is three dependency hops from a claims work
     // item and shares no wording with it, yet it is exactly the rule a tester needs.
     const connected = resolveConnectedEntries(ontology, {
       workItemIds: [],
-      text: "Change request raised in the BCR screen is not reflected",
+      text: "Claim raised in the claims screen is not reflected",
     });
 
-    expect(connected.has(ontologyEntryId("businessRules", "rule-bcr"))).toBe(true);
-    expect(connected.has(ontologyEntryId("businessRules", "rule-waybill"))).toBe(true);
-    expect(connected.has(ontologyEntryId("businessRules", "rule-to"))).toBe(true);
-    expect(connected.has(ontologyEntryId("businessRules", "rule-plan"))).toBe(true);
+    expect(connected.has(ontologyEntryId("businessRules", "rule-claims"))).toBe(true);
+    expect(connected.has(ontologyEntryId("businessRules", "rule-shipment"))).toBe(true);
+    expect(connected.has(ontologyEntryId("businessRules", "rule-order"))).toBe(true);
+    expect(connected.has(ontologyEntryId("businessRules", "rule-schedule"))).toBe(true);
   });
 
   it("does not reach a module that has no path to the anchor", () => {
-    // HelpDesk exists on the same board and is named nowhere in the chain. Adaptive
+    // Billing exists on the same board and is named nowhere in the chain. Adaptive
     // means the graph excludes it, not that a category was judged noisy in advance.
     const connected = resolveConnectedEntries(ontology, {
       workItemIds: [],
-      text: "Change request raised in the BCR screen is not reflected",
+      text: "Claim raised in the claims screen is not reflected",
     });
 
-    expect(connected.has(ontologyEntryId("businessRules", "rule-helpdesk"))).toBe(false);
-    expect(connected.has(ontologyEntryId("modules", "mod-helpdesk"))).toBe(false);
+    expect(connected.has(ontologyEntryId("businessRules", "rule-billing"))).toBe(false);
+    expect(connected.has(ontologyEntryId("modules", "mod-billing"))).toBe(false);
   });
 
   it("reports increasing hop distance along the chain", () => {
-    const connected = resolveConnectedEntries(ontology, { workItemIds: [], text: "BCR issue" });
+    const connected = resolveConnectedEntries(ontology, { workItemIds: [], text: "Claim issue" });
 
-    const bcr = connected.get(ontologyEntryId("businessRules", "rule-bcr"))!;
-    const waybill = connected.get(ontologyEntryId("businessRules", "rule-waybill"))!;
-    const plan = connected.get(ontologyEntryId("businessRules", "rule-plan"))!;
+    const claims = connected.get(ontologyEntryId("businessRules", "rule-claims"))!;
+    const shipment = connected.get(ontologyEntryId("businessRules", "rule-shipment"))!;
+    const schedule = connected.get(ontologyEntryId("businessRules", "rule-schedule"))!;
 
-    expect(bcr).toBeLessThan(waybill);
-    expect(waybill).toBeLessThan(plan);
-    expect(plan).toBeLessThanOrEqual(MAX_DEPENDENCY_HOPS);
+    expect(claims).toBeLessThan(shipment);
+    expect(shipment).toBeLessThan(schedule);
+    expect(schedule).toBeLessThanOrEqual(MAX_DEPENDENCY_HOPS);
   });
 
   it("anchors on provenance without needing the module to be named", () => {
@@ -142,40 +142,40 @@ describe("resolveConnectedEntries", () => {
       text: "Attachment does not open after upload",
     });
 
-    expect(connected.get(ontologyEntryId("businessRules", "rule-bcr"))).toBe(0);
+    expect(connected.get(ontologyEntryId("businessRules", "rule-claims"))).toBe(0);
     // ...and the chain still opens up from the module that rule belongs to.
-    expect(connected.has(ontologyEntryId("businessRules", "rule-waybill"))).toBe(true);
+    expect(connected.has(ontologyEntryId("businessRules", "rule-shipment"))).toBe(true);
   });
 
   it("anchors on the area path, where boards state module membership without saying it", () => {
     const connected = resolveConnectedEntries(ontology, {
       workItemIds: [],
-      text: "Some title with no module name\\nPortal\\\\Logistics\\\\Waybill",
+      text: "Some title with no module name\\nPortal\\\\Operations\\\\Shipment",
     });
 
-    expect(connected.has(ontologyEntryId("businessRules", "rule-waybill"))).toBe(true);
+    expect(connected.has(ontologyEntryId("businessRules", "rule-shipment"))).toBe(true);
   });
 
   it("does not anchor on a module name that merely appears inside a longer word", () => {
     const connected = resolveConnectedEntries(ontology, {
       workItemIds: [],
-      text: "The BCRs dashboard shows subBCRitems",
+      text: "The Claimsy dashboard shows subClaimitems",
     });
 
-    // "BCR" is a substring of both, but neither is a mention of the module.
-    expect(connected.has(ontologyEntryId("businessRules", "rule-helpdesk"))).toBe(false);
+    // "Claim" is a substring of both, but neither is a mention of the module.
+    expect(connected.has(ontologyEntryId("businessRules", "rule-billing"))).toBe(false);
   });
 
   it("connects a glossary term the work item actually uses", () => {
     // Glossary entries carry no module, so provenance and naming are their only edges.
-    // A bug titled "... not visible in the provider activity log" needs the definition
-    // of the term it is named after, whichever work item that definition came from.
+    // A work item that names a term needs that term defined, whichever work item the
+    // definition itself was extracted from.
     const connected = resolveConnectedEntries(ontology, {
       workItemIds: [],
-      text: "Waybill document does not render for the driver",
+      text: "Shipment document does not render for the carrier",
     });
 
-    expect(connected.get(ontologyEntryId("glossary", "Waybill"))).toBe(0);
+    expect(connected.get(ontologyEntryId("glossary", "Shipment"))).toBe(0);
   });
 
   it("connects nothing when the work item names no module and links to nothing", () => {

@@ -49,20 +49,19 @@ export const CONTEXT_CHATBOT_RETRIEVAL_CONTEXT_CHARS = 400;
  * Builds the text used for SEMANTIC retrieval: recent user turns followed by the
  * current question.
  *
- * Conversational follow-ups have no standalone meaning — "what about BCR submitter?",
+ * Conversational follow-ups have no standalone meaning — "what about the other role?",
  * "what about the rejected one?" — yet retrieval previously received them verbatim
  * while only the LLM prompt saw the history. The model therefore knew what was being
  * asked but was handed evidence selected from a context-free fragment.
  *
- * Measured on real questions and real project content, on-topic results in the top 8:
- *   "what about BCR submitter ?"                    1/8 -> 4/8
- *   "those are the only roles in the whole project?" 3/8 -> 7/8
- *   "what about the rejected one ?"                  0/8 -> 3/8
+ * Measured on real questions against real project content, on-topic results in the top
+ * 8 rose from 4/24 to 14/24 across the follow-ups collected from live sessions. One of
+ * them retrieved nothing relevant at all before the change.
  *
  * Deliberately NOT used for full-text or trigram search. Those should match the words
- * the user actually typed: in the first case above, the bare query's top hit was a work
- * item literally named "BCR Submitter", and folding in history displaced it. Keeping
- * lexical literal and semantic contextual preserves both.
+ * the user actually typed: where a follow-up names an entity that is also the title of a
+ * work item, the bare query surfaces that item and folding in history displaces it.
+ * Keeping lexical literal and semantic contextual preserves both.
  */
 export function buildRetrievalQueryWithHistory(
   question: string,

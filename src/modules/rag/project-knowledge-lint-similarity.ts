@@ -1,3 +1,4 @@
+import { acronymOf, entityAliasKey } from "./entity-aliases";
 import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
 import type { ProjectKnowledgeLintIssue } from "./project-knowledge-compiled.service";
 
@@ -69,5 +70,76 @@ export function addNameSimilarityIssues(
         sourceWorkItemIds: Array.from(new Set([...first.sourceWorkItemIds, ...second.sourceWorkItemIds])),
       });
     }
+  }
+
+  addEntityNamingIssues(names, issues);
+}
+
+/**
+ * Flags naming variants that word-overlap similarity cannot see.
+ *
+ * `areNamesSimilar` needs two shared words, so it never reports the most common
+ * fragmentation there is: a plural. On a real board several module identities were
+ * split between a singular and a plural spelling and none were reported, each one
+ * dividing that module's rules across two entries with separate evidence.
+ *
+ * Retrieval resolves these to one identity so the relationship graph does not fragment,
+ * but the knowledge base still holds two entries, and that is a curation problem only a
+ * person can close.
+ */
+function addEntityNamingIssues(
+  names: { category: string; entryKey: string; name: string; sourceWorkItemIds: string[] }[],
+  issues: NameSimilarityIssue[],
+) {
+  const byAliasKey = new Map<string, typeof names>();
+  for (const entry of names) {
+    const key = entityAliasKey(entry.name);
+    if (!key) continue;
+    const existing = byAliasKey.get(key);
+    if (existing) existing.push(entry);
+    else byAliasKey.set(key, [entry]);
+  }
+
+  for (const [, group] of byAliasKey) {
+    const distinct = Array.from(new Set(group.map((entry) => entry.name)));
+    if (distinct.length < 2) continue;
+    // Names that `similarityKey` already reduces to one form are this file's existing
+    // deliberate carve-out — they differ only by a generic head word, which the
+    // consolidation pass owns. This pass adds the cases word overlap cannot see.
+    if (new Set(distinct.map(similarityKey)).size < 2) continue;
+    issues.push({
+      issueType: "similar_name",
+      severity: "warning",
+      title: `Same entity written several ways: ${distinct.join(" / ")}`,
+      message:
+        "These names differ only by pluralisation, punctuation or a generic word such as \"module\". They almost certainly describe one subject, and holding them as separate entries splits its rules and evidence.",
+      category: group.every((entry) => entry.category === group[0].category) ? group[0].category : "cross_category",
+      entryKey: Array.from(new Set(group.map((entry) => entry.entryKey))).sort().join(" | "),
+      sourceWorkItemIds: Array.from(new Set(group.flatMap((entry) => entry.sourceWorkItemIds))),
+    });
+  }
+
+  // An acronym that could expand two ways cannot be resolved automatically without
+  // guessing which was meant, so the project has to say.
+  const expansionsByAcronym = new Map<string, string[]>();
+  for (const key of byAliasKey.keys()) {
+    const acronym = acronymOf(key);
+    if (!acronym) continue;
+    const existing = expansionsByAcronym.get(acronym);
+    if (existing) existing.push(key);
+    else expansionsByAcronym.set(acronym, [key]);
+  }
+  for (const [acronym, expansions] of expansionsByAcronym) {
+    const group = byAliasKey.get(acronym);
+    if (!group || expansions.length < 2) continue;
+    issues.push({
+      issueType: "similar_name",
+      severity: "warning",
+      title: `Ambiguous abbreviation: ${group[0].name}`,
+      message: `"${group[0].name}" reads as an abbreviation of ${expansions.length} entries on this board (${expansions.join(", ")}). Retrieval will not guess which, so it is treated as its own subject until the duplicate is merged or renamed.`,
+      category: group[0].category,
+      entryKey: Array.from(new Set(group.map((entry) => entry.entryKey))).sort().join(" | "),
+      sourceWorkItemIds: Array.from(new Set(group.flatMap((entry) => entry.sourceWorkItemIds))),
+    });
   }
 }

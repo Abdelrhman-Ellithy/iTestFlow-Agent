@@ -28,9 +28,9 @@ describe("embeddableChunkText", () => {
           "Description:",
           "Only a department manager may approve.",
           "",
-          "Area path: SPPCTracker",
+          "Area path: Contoso Portal",
           "",
-          "Iteration path: SPPCTracker\January - 2026",
+          "Iteration path: Contoso Portal\Sprint 12",
           "",
           "Updated: 2026-04-30T05:28:53.007Z",
         ].join("\n"),
@@ -56,10 +56,10 @@ describe("embeddableChunkText", () => {
     // 18% of chunks in a real project had no description or acceptance criteria.
     // Stripping every line would otherwise send "" to the model.
     const text = embeddableChunkText(
-      chunk("Work item ID: 33047\n\nArea path: SPPCTracker\n\nUpdated: 2025-12-09T06:21:39.33Z", null),
+      chunk("Work item ID: 4821\n\nArea path: Contoso Portal\n\nUpdated: 2025-12-09T06:21:39.33Z", null),
     );
     expect(text.trim().length).toBeGreaterThan(0);
-    expect(text).toContain("33047");
+    expect(text).toContain("4821");
   });
 
   it("collapses the blank lines left behind by removal", () => {

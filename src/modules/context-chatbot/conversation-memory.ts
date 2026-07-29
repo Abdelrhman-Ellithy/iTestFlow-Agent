@@ -7,8 +7,9 @@ import { estimateTokens } from "./evidence-budget";
  * History used to be a pure recency window — the last few turns, everything older
  * discarded regardless of what it contained. In a long session that silently throws
  * away the turns that matter most: the constraint the user gave at the start, or a
- * correction like "wrong, planning officer doesn't belong to ECMS module", which is
- * exactly the turn that must survive so the mistake is not repeated.
+ * correction telling the assistant that a role it named does not belong to the module
+ * under discussion — exactly the turn that must survive so the mistake is not
+ * repeated.
  *
  * So the conversation accumulates in full, and this decides what is worth sending:
  * recent turns always, older turns by relevance to the question being asked, within a
