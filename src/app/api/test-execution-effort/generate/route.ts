@@ -8,7 +8,7 @@ import {
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { loadTestExecutionEffortData } from "@/modules/test-execution-effort/test-execution-effort.data-loader";
 import {
   buildTestExecutionEffortPreview,
@@ -71,7 +71,7 @@ export async function POST(request: Request) {
       provider,
       storyId: parsed.data.storyId,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
+      retrievalTopK: await resolveRetrievalTopK({ workspaceId: ctx.workspace.id, query: "" }),
     });
     const preview = buildTestExecutionEffortPreview({
       targetRequirement: data.targetRequirement,

@@ -12,7 +12,7 @@ import { runRequirementAnalysis } from "@/modules/requirement-analysis/applicati
 import { rankProjectKnowledgeForWorkItem } from "@/modules/rag/knowledge-relevance.service";
 import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
-import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
@@ -80,7 +80,10 @@ export async function POST(request: Request) {
       provider,
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
+      retrievalTopK: await resolveRetrievalTopK({
+        workspaceId: ctx.workspace.id,
+        query: `${targetRequirement.title}\n${targetRequirement.description ?? ""}`,
+      }),
       workflowType: "requirement_analysis",
     });
     const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "requirement_analysis" });

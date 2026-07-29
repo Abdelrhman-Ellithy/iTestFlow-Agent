@@ -249,7 +249,6 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
 
     for (const item of workItems) {
       const snapshotFields = workItemToSnapshotFields(item);
-      const text = workItemToContextText(item);
       const contentHash = stableHash(JSON.stringify(snapshotFields));
       const existing = existingById.get(item.id);
       const snapshotId = `awis_${stableHash(`${scope.projectId}:${scope.azureProjectId}:${item.id}:${contentHash}:${item.revision ?? -1}`).slice(0, 40)}`;
@@ -287,7 +286,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
       );
       if (!persistedSnapshot) throw new Error(`Failed to persist source snapshot for work item ${item.id}.`);
 
-      if (mode === "incremental" && existing?.content_hash === contentHash && existing.sync_status !== "inactive") {
+      if (mode === "incremental" && existing?.content_hash === contentHash && existing.chunk_recipe_version === CURRENT_CHUNK_TEXT_RECIPE_VERSION && existing.sync_status !== "inactive") {
         unchangedCount += 1;
         if (existing.current_snapshot_id !== persistedSnapshot.id) {
           provenanceRefreshCount += 1;
@@ -313,6 +312,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
           azureWorkItemId: item.id,
           currentIndexRunId: indexRunId,
           currentSnapshotId: persistedSnapshot.id,
+          chunkRecipeVersion: CURRENT_CHUNK_TEXT_RECIPE_VERSION,
           lastSyncedAt: now,
           updatedAt: now,
         }, client);
@@ -343,6 +343,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
         contentHash,
         currentIndexRunId: indexRunId,
         currentSnapshotId: persistedSnapshot.id,
+        chunkRecipeVersion: CURRENT_CHUNK_TEXT_RECIPE_VERSION,
         createdAt: now,
         updatedAt: now,
       }, client);
@@ -358,21 +359,30 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
         createdCount += 1;
       }
 
-      if (!text.trim()) {
+      const contextUnits = workItemToContextUnits(item).filter((unit) => unit.text.trim().length > 0);
+      if (!contextUnits.length) {
         skippedEmptyCount += 1;
         continue;
       }
 
-      const chunks = chunkText({
-        projectId: scope.projectId,
-        azureProjectId: scope.azureProjectId,
-        sourceId: item.id,
-        sourceType: "azure_work_item",
-        title: item.title,
-        text,
-      });
+      // Each field unit is chunked independently, then concatenated into one
+      // continuous chunk_index — every downstream consumer (ORDER BY chunk_index,
+      // the azure_work_item_{projectId}_{itemId}_{index} chunk-id shape) depends on
+      // the index staying continuous across the whole work item, not per-field.
+      const fieldChunks: Array<{ content: string; field: WorkItemContextUnitField }> = [];
+      for (const unit of contextUnits) {
+        const unitChunks = chunkText({
+          projectId: scope.projectId,
+          azureProjectId: scope.azureProjectId,
+          sourceId: item.id,
+          sourceType: "azure_work_item",
+          title: item.title,
+          text: unit.text,
+        });
+        for (const chunk of unitChunks) fieldChunks.push({ content: chunk.content, field: unit.field });
+      }
 
-      for (const [index, chunk] of chunks.entries()) {
+      for (const [index, chunk] of fieldChunks.entries()) {
         await sqlRun(INSERT_CHUNK_SQL, {
           id: `azure_work_item_${scope.projectId}_${item.id}_${index}`,
           projectId: scope.projectId,
@@ -393,6 +403,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
             iterationPath: item.iterationPath,
             tags: item.tags ?? [],
             updatedDate: item.updatedDate,
+            field: chunk.field,
             chunkIndex: index,
           }),
           sourceSnapshotId: persistedSnapshot.id,
@@ -402,7 +413,7 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
       }
 
       indexedWorkItemCount += 1;
-      indexedChunkCount += chunks.length;
+      indexedChunkCount += fieldChunks.length;
     }
 
     // Only retire items when this run saw the COMPLETE matching set. A truncated
@@ -754,6 +765,52 @@ export function workItemToContextText(item: Requirement) {
   ]
     .filter(Boolean)
     .join("\n\n");
+}
+
+export type WorkItemContextUnitField = "core" | "acceptance_criteria";
+
+export type WorkItemContextUnit = {
+  field: WorkItemContextUnitField;
+  text: string;
+};
+
+/**
+ * Splits a work item's context into field-aware units for chunking, instead of one
+ * flattened blob. Acceptance criteria is retrieval-distinct from the rest of a work
+ * item — it's the closest thing Azure DevOps work items have to explicit test
+ * conditions — and flattening it into the same chunk as the description meant a chunk
+ * boundary could land mid-AC-list, splitting one condition's setup from its expectation.
+ *
+ * Each unit is independently chunked and re-prefixed with the title (matching the
+ * rationale in embeddableChunkText for repeating the title on every chunk: a
+ * continuation chunk with no title is unidentifiable evidence).
+ */
+export function workItemToContextUnits(item: Requirement): WorkItemContextUnit[] {
+  const core = [
+    `Work item ID: ${item.id}`,
+    `Type: ${item.workItemType}`,
+    `State: ${item.state ?? "Unknown"}`,
+    `Title: ${item.title}`,
+    item.description ? `Description:\n${stripHtml(item.description)}` : "",
+    item.tags?.length ? `Tags: ${item.tags.join(", ")}` : "",
+    item.areaPath ? `Area path: ${item.areaPath}` : "",
+    item.iterationPath ? `Iteration path: ${item.iterationPath}` : "",
+    item.updatedDate ? `Updated: ${item.updatedDate}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
+
+  const units: WorkItemContextUnit[] = [{ field: "core", text: core }];
+
+  if (item.acceptanceCriteria) {
+    const acceptanceCriteriaText = [
+      `Title: ${item.title}`,
+      `Acceptance criteria:\n${stripHtml(item.acceptanceCriteria)}`,
+    ].join("\n\n");
+    units.push({ field: "acceptance_criteria", text: acceptanceCriteriaText });
+  }
+
+  return units;
 }
 
 export function workItemToSnapshotFields(item: Requirement) {

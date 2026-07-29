@@ -56,6 +56,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/rag/full-text-search.ts",
   "src/modules/rag/hybrid-ranking.ts",
   "src/modules/rag/near-duplicate-chunks.ts",
+  "src/modules/rag/metadata-filter.ts",
   "src/modules/rag/entity-aliases.ts",
   "src/modules/rag/knowledge-ontology.ts",
   "src/modules/rag/knowledge-relevance-cutoff.ts",

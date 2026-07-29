@@ -4,6 +4,7 @@ import { assertProjectScope, type ProjectScope } from "@/modules/projects/projec
 import { createId, nowIso, sqlAll, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { MAX_EMBED_BATCH_SIZE, type EmbeddingProvider } from "./embedding-provider";
 import { cosineSimilarity } from "./hybrid-ranking";
+import { metadataFilterParams, workItemPathFilterSql, workItemTypeFilterSql, type MetadataFilter } from "./metadata-filter";
 
 /**
  * Persists chunk embeddings in the `embeddings` table (`vector` holds the raw vector
@@ -267,6 +268,8 @@ export async function searchProjectContextByEmbedding(input: {
   query: string;
   topK: number;
   maxChunksPerWorkItem?: number;
+  /** Opt-in restriction by work item type / area path / iteration path. Never state. */
+  filter?: MetadataFilter;
 }): Promise<SemanticContextChunk[]> {
   const scope = assertProjectScope(input.scope);
   const query = input.query.trim();
@@ -291,12 +294,18 @@ export async function searchProjectContextByEmbedding(input: {
         AND e.source_type = @sourceType
         AND e.vector_reference = @vectorReference
         AND ${ACTIVE_CHUNK_FILTER_SQL}
+        AND ${workItemTypeFilterSql("dc.")}
+        AND ${workItemPathFilterSql(
+          { projectId: "dc.project_id", azureProjectId: "dc.azure_project_id", azureWorkItemId: "dc.azure_work_item_id" },
+          "mf_embed",
+        )}
     `,
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
       sourceType: CHUNK_SOURCE_TYPE,
       vectorReference: chunkVectorReference(input.provider),
+      ...metadataFilterParams(input.filter),
     },
   );
   if (!rows.length) return [];

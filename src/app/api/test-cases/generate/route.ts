@@ -15,7 +15,7 @@ import { TestDesignOptionsRequestSchema } from "@/modules/test-case-design/test-
 import { rankProjectKnowledgeForWorkItem } from "@/modules/rag/knowledge-relevance.service";
 import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
-import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
 import { statusForServerError, toErrorResponse } from "@/modules/shared/errors/error-response";
@@ -74,7 +74,10 @@ export async function POST(request: Request) {
       provider,
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
+      retrievalTopK: await resolveRetrievalTopK({
+        workspaceId: ctx.workspace.id,
+        query: `${targetRequirement.title}\n${targetRequirement.description ?? ""}`,
+      }),
       workflowType: "test_case_generation",
     });
     const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "test_case_design" });
