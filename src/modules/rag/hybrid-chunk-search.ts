@@ -6,6 +6,7 @@ import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-pro
 import { searchProjectContextByEmbedding } from "./embedding-store.service";
 import { searchProjectContextByTrigram } from "./trigram-search";
 import { fuseByReciprocalRank } from "./hybrid-ranking";
+import { dedupeNearDuplicateChunks } from "./near-duplicate-chunks";
 
 /**
  * Shared FTS + semantic + trigram chunk search, used by both
@@ -118,8 +119,12 @@ export async function searchProjectChunksHybrid(input: {
   // single-list fusion through RRF, which would flatten its real score spread into
   // near-identical normalized scores for no reason.
   if (!semanticRows.length && !trigramRows.length) {
+    const ftsResults = ftsRows.map((row) => ({ row, score: row.rank }));
+    const deduped = dedupeNearDuplicateChunks(
+      ftsResults.map((r) => ({ item: r, text: r.row.content })),
+    );
     return applyPerWorkItemCap(
-      ftsRows.map((row) => ({ row, score: row.rank })),
+      deduped.map((d) => d.item),
       maxChunksPerWorkItem,
       input.topK,
     );
@@ -129,8 +134,12 @@ export async function searchProjectChunksHybrid(input: {
     lists: [ftsRows, semanticRows, trigramRows].filter((list) => list.length > 0),
     getKey: (row) => row.id,
   });
+  const fusedResults = fused.map(({ item, score }) => ({ row: item, score }));
+  const deduped = dedupeNearDuplicateChunks(
+    fusedResults.map((r) => ({ item: r, text: r.row.content })),
+  );
   return applyPerWorkItemCap(
-    fused.map(({ item, score }) => ({ row: item, score })),
+    deduped.map((d) => d.item),
     maxChunksPerWorkItem,
     input.topK,
   );

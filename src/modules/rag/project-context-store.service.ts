@@ -60,19 +60,21 @@ type RecentContextRow = {
 export type ProjectContextSortBy = "lastIndexedAt" | "type" | "state";
 export type ProjectContextSortDirection = "asc" | "desc";
 
+const CURRENT_CHUNK_TEXT_RECIPE_VERSION = "v4";
+
 const UPSERT_WORK_ITEM_SQL = `
   INSERT INTO azure_devops_work_items (
     id, project_id, azure_project_id, azure_project_name, azure_organization_url,
     azure_work_item_id, work_item_type, title, description, acceptance_criteria,
     state, assigned_to, priority, tags, area_path, iteration_path, raw_json,
     created_date, updated_date, last_synced_at, content_hash, sync_status,
-    current_index_run_id, current_snapshot_id, created_at, updated_at
+    current_index_run_id, current_snapshot_id, chunk_recipe_version, created_at, updated_at
   ) VALUES (
     @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
     @azureWorkItemId, @workItemType, @title, @description, @acceptanceCriteria,
     @state, @assignedTo, @priority, @tags, @areaPath, @iterationPath, @rawJson,
     @createdDate, @updatedDate, @lastSyncedAt, @contentHash, 'active',
-    @currentIndexRunId, @currentSnapshotId, @createdAt, @updatedAt
+    @currentIndexRunId, @currentSnapshotId, @chunkRecipeVersion, @createdAt, @updatedAt
   )
   ON CONFLICT(project_id, azure_work_item_id) DO UPDATE SET
     azure_project_id = excluded.azure_project_id,
@@ -96,6 +98,7 @@ const UPSERT_WORK_ITEM_SQL = `
     sync_status = 'active',
     current_index_run_id = excluded.current_index_run_id,
     current_snapshot_id = excluded.current_snapshot_id,
+    chunk_recipe_version = excluded.chunk_recipe_version,
     updated_at = excluded.updated_at
 `;
 const MARK_UNCHANGED_WORK_ITEM_SQL = `
@@ -104,6 +107,7 @@ const MARK_UNCHANGED_WORK_ITEM_SQL = `
       sync_status = 'active',
       current_index_run_id = @currentIndexRunId,
       current_snapshot_id = @currentSnapshotId,
+      chunk_recipe_version = @chunkRecipeVersion,
       updated_at = @updatedAt
   WHERE project_id = @projectId
     AND azure_project_id = @azureProjectId
@@ -219,9 +223,10 @@ export async function indexAzureWorkItemsAsProjectContext(input: {
       content_hash: string | null;
       sync_status: string | null;
       current_snapshot_id: string | null;
+      chunk_recipe_version: string | null;
     }>(
       `
-        SELECT azure_work_item_id, content_hash, sync_status, current_snapshot_id
+        SELECT azure_work_item_id, content_hash, sync_status, current_snapshot_id, chunk_recipe_version
         FROM azure_devops_work_items
         WHERE project_id = @projectId AND azure_project_id = @azureProjectId
       `,

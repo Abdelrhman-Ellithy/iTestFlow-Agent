@@ -64,8 +64,9 @@ const KNOWLEDGE_SOURCE_TYPE = "project_knowledge_entry";
  * knowledge search of its semantic signal until someone happens to publish.
  *
  * chunk v3: title prefix + non-semantic header lines stripped (embeddableChunkText).
+ * chunk v4: field-aware chunking — title/description/AC/tags as separate units.
  */
-const CHUNK_RECIPE_VERSION = "v3";
+const CHUNK_RECIPE_VERSION = "v4";
 // The knowledge recipe has never changed, so it stays on the unsuffixed reference that
 // predates this versioning scheme. Introducing a suffix here would invalidate every
 // stored knowledge vector for a recipe that is byte-identical — and because knowledge
