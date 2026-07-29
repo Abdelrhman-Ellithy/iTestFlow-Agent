@@ -55,6 +55,7 @@ export const GATED_INCLUDE: string[] = [
   "src/modules/rag/embedding-provider.ts",
   "src/modules/rag/full-text-search.ts",
   "src/modules/rag/hybrid-ranking.ts",
+  "src/modules/rag/knowledge-ontology.ts",
   "src/modules/rag/knowledge-relevance-cutoff.ts",
   "src/modules/rag/local-vector-store.ts",
   "src/modules/rag/project-knowledge-atomic-constraint.ts",

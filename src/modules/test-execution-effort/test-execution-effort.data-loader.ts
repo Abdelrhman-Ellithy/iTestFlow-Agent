@@ -5,6 +5,7 @@ import type { LLMProvider } from "@/modules/llm/llm-types";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext, resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
+import { rankProjectKnowledgeForWorkItem } from "@/modules/rag/knowledge-relevance.service";
 
 export async function loadTestExecutionEffortData(input: {
   scope: ProjectScope;
@@ -47,6 +48,17 @@ export async function loadTestExecutionEffortData(input: {
         retrievalTopK: input.retrievalTopK,
       });
   const projectKnowledge = await loadProjectKnowledgeContext({ scope, consumer: "test_execution_effort" });
+  // Selects the compiled knowledge this work item is actually connected to, by
+  // similarity and by the project's own module/provenance/dependency graph.
+  const rankedKnowledgeKeys = await rankProjectKnowledgeForWorkItem({
+    scope,
+    targetRequirement,
+    projectKnowledgeBase: projectKnowledge.knowledgeBase,
+    contextWorkItemIds: [
+      ...context.relatedWorkItems.map((item) => item.workItemId),
+      ...context.selectedContext.map((item) => item.workItemId),
+    ],
+  });
 
   return {
     targetRequirement,
@@ -55,6 +67,7 @@ export async function loadTestExecutionEffortData(input: {
     selectedContext: context.selectedContext,
     resolvedContextUsed: context.contextUsed,
     retrievalTopK: context.retrievalTopK,
+    rankedKnowledgeKeys,
     projectKnowledgeBase: projectKnowledge.knowledgeBase,
     projectKnowledgeNotice: projectKnowledge.promptNotice,
     hasProjectContext: Boolean(context.selectedContext.length || context.relatedWorkItems.length || projectKnowledge.knowledgeBase),

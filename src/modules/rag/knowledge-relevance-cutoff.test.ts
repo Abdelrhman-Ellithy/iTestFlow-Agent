@@ -1,138 +1,140 @@
 import { describe, expect, it } from "vitest";
 
+import { ontologyEntryId, type OntologyCategory } from "@/modules/rag/knowledge-ontology";
 import {
   hasAnyRelevantEntry,
-  MIN_ABSOLUTE_SIMILARITY,
-  selectRelevantEntryKeys,
+  selectRelevantEntries,
   type ScoredEntry,
 } from "@/modules/rag/knowledge-relevance-cutoff";
 
 /**
- * The fixtures below are real similarity distributions, measured with the pinned local
- * embedding model against a live project's compiled knowledge base (114 business rules,
- * 48 glossary terms, 39 modules, 10 state transitions, 2 dependencies). Synthetic
- * numbers would prove only that the arithmetic works; these encode the shapes that
- * actually broke.
+ * The similarity figures below were measured with the pinned local embedding model
+ * against a live project's compiled knowledge base — 114 business rules, 48 glossary
+ * terms, 39 modules, 10 state transitions and 2 module dependencies — for three real
+ * work items. Synthetic numbers would prove only that the arithmetic runs; these encode
+ * the distributions that actually produced bad selections.
  */
 
-function scored(similarities: number[], prefix = "e"): ScoredEntry[] {
-  return similarities.map((similarity, index) => ({ key: `${prefix}${index + 1}`, similarity }));
+function entries(
+  category: OntologyCategory,
+  similarities: number[],
+  prefix: string,
+): ScoredEntry[] {
+  return similarities.map((similarity, index) => ({
+    key: `${prefix}-${index + 1}`,
+    category,
+    similarity,
+  }));
 }
 
-/**
- * Rebuilds a full category from its measured head plus its measured size and floor.
- * The cut-off keys off the category median, so a fixture truncated to its top entries
- * would measure a different distribution than the one that was observed.
- */
-function withTail(head: number[], options: { count: number; min: number }): ScoredEntry[] {
+/** Rebuilds a category's full spread from its measured head, size and floor. */
+function withTail(head: number[], options: { count: number; min: number }): number[] {
   const tailLength = options.count - head.length;
   const from = head[head.length - 1];
-  const tail = Array.from({ length: tailLength }, (_, index) =>
-    from - ((from - options.min) * (index + 1)) / tailLength,
-  );
-  return scored([...head, ...tail]);
+  return [
+    ...head,
+    ...Array.from({ length: tailLength }, (_, index) =>
+      from - ((from - options.min) * (index + 1)) / tailLength,
+    ),
+  ];
 }
 
-describe("selectRelevantEntryKeys", () => {
-  describe("work item 45105 - attachments not visible in the provider activity log", () => {
-    it("rejects a category where nothing is relevant", () => {
-      // The project's only two dependencies are about swap requests and waybills.
-      // Both rank top-of-category against this work item purely because there is
-      // nothing else to compare them against.
-      const dependencies = scored([0.586, 0.567]);
+/** Work item 45105: attachments uploaded with a clarification are not visible. */
+function knowledgeBaseFor45105(): ScoredEntry[] {
+  return [
+    ...entries("businessRules", withTail(
+      [0.769, 0.756, 0.755, 0.739, 0.706, 0.705, 0.697, 0.682], { count: 114, min: 0.465 },
+    ), "rule"),
+    ...entries("modules", withTail(
+      [0.723, 0.651, 0.619, 0.617, 0.609, 0.605, 0.603, 0.600], { count: 39, min: 0.495 },
+    ), "mod"),
+    ...entries("stateTransitions",
+      [0.678, 0.662, 0.634, 0.633, 0.623, 0.615, 0.603, 0.595, 0.590, 0.579], "st"),
+    ...entries("glossary", withTail(
+      [0.657, 0.598, 0.586, 0.583, 0.581], { count: 48, min: 0.456 },
+    ), "term"),
+    ...entries("crossDependencies", [0.586, 0.567], "dep"),
+  ];
+}
 
-      expect(selectRelevantEntryKeys(dependencies, "crossDependencies")).toEqual([]);
+const NOTHING_CONNECTED = new Map<string, number>();
+
+describe("selectRelevantEntries", () => {
+  it("rejects a category whose every entry is unrelated", () => {
+    // The project's only two dependencies are about swap requests and vehicle
+    // management. Both top their own category purely because there is nothing else in
+    // it — a per-category bar cannot see that, a global one can.
+    const selection = selectRelevantEntries(knowledgeBaseFor45105(), NOTHING_CONNECTED);
+
+    expect(selection.crossDependencies ?? []).toEqual([]);
+  });
+
+  it("keeps the one module the work item is about and drops the tail", () => {
+    // Activity Tracker, then HelpDesk, IPP, BCR, Waybill — none of which the bug
+    // touches. Naming them asserts a relationship that is not there.
+    const selection = selectRelevantEntries(knowledgeBaseFor45105(), NOTHING_CONNECTED);
+
+    expect(selection.modules).toEqual(["mod-1"]);
+  });
+
+  it("stays generous with business rules, which are the test conditions", () => {
+    const selection = selectRelevantEntries(knowledgeBaseFor45105(), NOTHING_CONNECTED);
+
+    // Bounded rather than exact: the fixture interpolates each category's tail from its
+    // measured head, size and floor, so the count tracks the real selection's shape
+    // without reproducing it entry for entry.
+    expect(selection.businessRules?.length).toBeGreaterThan(5);
+    expect(selection.businessRules?.length).toBeLessThan(20);
+  });
+
+  it("does not need a per-category rule to be strict about modules and lenient about rules", () => {
+    // Both fall out of one global bar applied to the project's own spread: rules
+    // occupy the top of it, the module tail does not.
+    const selection = selectRelevantEntries(knowledgeBaseFor45105(), NOTHING_CONNECTED);
+
+    expect(selection.businessRules?.length).toBeGreaterThan((selection.modules ?? []).length);
+  });
+
+  describe("structural connection", () => {
+    it("keeps an entry the ontology connects even when similarity would drop it", () => {
+      // Measured on work item 45104: the module the item is *in* scored 0.710 against a
+      // global bar of ~0.72. Similarity alone discarded the single most relevant module
+      // while keeping rules from elsewhere in the board.
+      const scored: ScoredEntry[] = [
+        ...entries("businessRules", withTail([0.848, 0.782, 0.777, 0.763], { count: 114, min: 0.530 }), "rule"),
+        ...entries("modules", withTail([0.710, 0.625, 0.623], { count: 39, min: 0.518 }), "mod"),
+      ];
+      const withoutOntology = selectRelevantEntries(scored, NOTHING_CONNECTED);
+      const withOntology = selectRelevantEntries(
+        scored,
+        new Map([[ontologyEntryId("modules", "mod-1"), 0]]),
+      );
+
+      expect(withoutOntology.modules ?? []).toEqual([]);
+      expect(withOntology.modules).toEqual(["mod-1"]);
     });
 
-    it("keeps the one module the work item is about and drops the tail", () => {
-      // Activity Tracker, then HelpDesk, IPP, BCR, Waybill — none of which the bug
-      // touches. Naming them in the domain brief asserts a relationship that is not
-      // there.
-      const modules = scored([0.723, 0.651, 0.619, 0.617, 0.609, 0.605, 0.603, 0.600]);
+    it("keeps a dependency the graph reaches, however far down it scores", () => {
+      // The inverse of the first test. Nothing about the entry changed — only whether
+      // the project's graph says the work item's module depends on it.
+      const scored = knowledgeBaseFor45105();
+      const reachedByGraph = new Map([[ontologyEntryId("crossDependencies", "dep-1"), 2]]);
 
-      expect(selectRelevantEntryKeys(modules, "modules")).toEqual(["e1"]);
+      expect(selectRelevantEntries(scored, reachedByGraph).crossDependencies).toEqual(["dep-1"]);
     });
 
-    it("drops a state transition belonging to an unrelated workflow", () => {
-      // Rank 5 is "Master Plan Workflow: confirmed", which has nothing to do with
-      // clarification attachments.
-      const transitions = scored([0.678, 0.662, 0.634, 0.633, 0.623, 0.615, 0.603, 0.595, 0.590, 0.579]);
+    it("orders by similarity, not by hop distance", () => {
+      // Connection decides membership; it does not claim a distant entry is a better
+      // match than a close one.
+      const scored: ScoredEntry[] = entries("businessRules", [0.80, 0.50], "rule");
+      const connected = new Map([[ontologyEntryId("businessRules", "rule-2"), 0]]);
 
-      expect(selectRelevantEntryKeys(transitions, "stateTransitions")).toEqual(["e1", "e2"]);
-    });
-  });
-
-  describe("work item 45104 - parent task cannot close while a subtask is rejected", () => {
-    it("keeps the rules behind an unusually strong leader", () => {
-      // 0.848 is a near-exact restatement of the work item, but the 0.782 and 0.777
-      // behind it are also directly on point. Measuring distance from the best entry
-      // instead of from the category median discarded both.
-      const rules = withTail([0.848, 0.782, 0.777, 0.763, 0.720, 0.713, 0.709, 0.704], {
-        count: 114, min: 0.530,
-      });
-
-      const kept = selectRelevantEntryKeys(rules, "businessRules");
-
-      expect(kept).toContain("e2");
-      expect(kept).toContain("e3");
-      expect(kept.length).toBeLessThan(8);
+      expect(selectRelevantEntries(scored, connected).businessRules).toEqual(["rule-1", "rule-2"]);
     });
   });
 
-  describe("work item 45102 - platform freezes during submission causing duplicates", () => {
-    it("does not admit most of a flat category", () => {
-      // Best 0.726 against a median of 0.607: no clear winner, and a distance-from-best
-      // rule admitted 26 of 114 rules here. Business rules are deliberately the most
-      // lenient category, so this stays generous — but bounded.
-      const rules = withTail([0.726, 0.703, 0.680, 0.679, 0.673, 0.671, 0.666, 0.666], {
-        count: 114, min: 0.506,
-      });
-
-      const kept = selectRelevantEntryKeys(rules, "businessRules");
-
-      expect(kept.length).toBeGreaterThan(3);
-      expect(kept.length).toBeLessThan(rules.length / 4);
-    });
-  });
-
-  it("is more lenient for business rules than for modules on the same distribution", () => {
-    // A missing business rule is a missing test condition; an unrelated module name is
-    // a false claim about scope. The asymmetry is deliberate.
-    const distribution = scored([0.760, 0.720, 0.700, 0.690, 0.680, 0.660, 0.640, 0.620]);
-
-    expect(selectRelevantEntryKeys(distribution, "businessRules").length)
-      .toBeGreaterThan(selectRelevantEntryKeys(distribution, "modules").length);
-  });
-
-  it("returns entries best first regardless of input order", () => {
-    const shuffled: ScoredEntry[] = [
-      { key: "middle", similarity: 0.78 },
-      { key: "worst", similarity: 0.30 },
-      { key: "best", similarity: 0.80 },
-      { key: "low", similarity: 0.40 },
-    ];
-
-    expect(selectRelevantEntryKeys(shuffled, "businessRules")).toEqual(["best", "middle"]);
-  });
-
-  it("rejects everything below the absolute floor even when the spread looks healthy", () => {
-    const belowFloor = scored([
-      MIN_ABSOLUTE_SIMILARITY - 0.01,
-      MIN_ABSOLUTE_SIMILARITY - 0.20,
-      MIN_ABSOLUTE_SIMILARITY - 0.25,
-    ]);
-
-    expect(selectRelevantEntryKeys(belowFloor, "businessRules")).toEqual([]);
-  });
-
-  it("handles an empty category", () => {
-    expect(selectRelevantEntryKeys([], "glossary")).toEqual([]);
-  });
-
-  it("always keeps the best entry when it clears the floor", () => {
-    const entries = scored([0.90, 0.62, 0.61]);
-
-    expect(selectRelevantEntryKeys(entries, "modules")[0]).toBe("e1");
+  it("returns nothing for an empty knowledge base", () => {
+    expect(selectRelevantEntries([], NOTHING_CONNECTED)).toEqual({});
   });
 });
 

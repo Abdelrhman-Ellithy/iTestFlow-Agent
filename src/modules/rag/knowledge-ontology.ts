@@ -28,6 +28,9 @@ import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
  *   dependency is a relationship, and relevance flows along it either way.
  * - **work item -> module**: the module's name appearing in the item's text, area path
  *   or tags.
+ * - **work item -> glossary term**: the term appearing in the item's text. Glossary
+ *   entries carry no module, so naming is the only structural edge they have — and a
+ *   work item that uses a term is exactly the case where its definition is needed.
  */
 
 export type OntologyCategory =
@@ -48,6 +51,7 @@ export type KnowledgeOntology = {
   moduleNeighbours: Map<string, Set<string>>;
   moduleNamesByKey: Map<string, string>;
   workItemEntries: Map<string, string[]>;
+  glossaryTerms: Map<string, string>;
 };
 
 const EMPTY_ONTOLOGY: KnowledgeOntology = {
@@ -56,6 +60,7 @@ const EMPTY_ONTOLOGY: KnowledgeOntology = {
   moduleNeighbours: new Map(),
   moduleNamesByKey: new Map(),
   workItemEntries: new Map(),
+  glossaryTerms: new Map(),
 };
 
 function moduleKey(name: string | undefined | null) {
@@ -82,18 +87,19 @@ export function buildKnowledgeOntology(knowledgeBase: ProjectKnowledgeBase | nul
     moduleNeighbours: new Map(),
     moduleNamesByKey: new Map(),
     workItemEntries: new Map(),
+    glossaryTerms: new Map(),
   };
 
   const attach = (
     category: OntologyCategory,
     key: string,
-    module: string | null,
+    owningModule: string | null,
     sourceWorkItemIds: string[] | undefined,
   ) => {
     const entryId = ontologyEntryId(category, key);
-    if (module) {
-      ontology.entryModule.set(entryId, module);
-      push(ontology.moduleEntries, module, entryId);
+    if (owningModule) {
+      ontology.entryModule.set(entryId, owningModule);
+      push(ontology.moduleEntries, owningModule, entryId);
     }
     for (const workItemId of sourceWorkItemIds ?? []) {
       const trimmed = String(workItemId).trim();
@@ -101,12 +107,12 @@ export function buildKnowledgeOntology(knowledgeBase: ProjectKnowledgeBase | nul
     }
   };
 
-  for (const module of knowledgeBase.modules) {
-    const key = moduleKey(module.name);
+  for (const projectModule of knowledgeBase.modules) {
+    const key = moduleKey(projectModule.name);
     if (!key) continue;
-    ontology.moduleNamesByKey.set(key, module.name);
+    ontology.moduleNamesByKey.set(key, projectModule.name);
     // A module is a member of itself, so anchoring a module also selects its own entry.
-    attach("modules", module.id, key, module.sourceWorkItemIds);
+    attach("modules", projectModule.id, key, projectModule.sourceWorkItemIds);
   }
 
   for (const rule of knowledgeBase.businessRules) {
@@ -117,6 +123,7 @@ export function buildKnowledgeOntology(knowledgeBase: ProjectKnowledgeBase | nul
   }
   for (const term of knowledgeBase.glossary) {
     attach("glossary", term.term, null, term.sourceWorkItemIds);
+    if (term.term.trim()) ontology.glossaryTerms.set(ontologyEntryId("glossary", term.term), term.term);
   }
 
   for (const dependency of knowledgeBase.crossDependencies) {
@@ -183,30 +190,36 @@ export function resolveConnectedEntries(
 
   const anchoredModules = new Set<string>();
   for (const entryId of connected.keys()) {
-    const module = ontology.entryModule.get(entryId);
-    if (module) anchoredModules.add(module);
+    const owningModule = ontology.entryModule.get(entryId);
+    if (owningModule) anchoredModules.add(owningModule);
   }
 
   // Naming: a module the work item talks about, or files itself under. Area paths are
   // split on their separators so "Portal\\Activity Tracker" anchors Activity Tracker.
   const haystack = ` ${anchors.text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()} `;
-  for (const [key, name] of ontology.moduleNamesByKey) {
-    const needle = name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const mentions = (value: string) => {
+    const needle = value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
     // Two characters match too much to be evidence of anything.
-    if (needle.length < 3) continue;
-    if (haystack.includes(` ${needle} `)) anchoredModules.add(key);
+    return needle.length >= 3 && haystack.includes(` ${needle} `);
+  };
+  for (const [key, name] of ontology.moduleNamesByKey) {
+    if (mentions(name)) anchoredModules.add(key);
+  }
+  // A term the work item uses is a term the work item needs defined.
+  for (const [entryId, term] of ontology.glossaryTerms) {
+    if (mentions(term)) reach(entryId, 0);
   }
 
   // Spread outward along declared dependencies, one hop at a time.
   let frontier = [...anchoredModules];
   const visitedModules = new Set(frontier);
-  for (let hops = 1; frontier.length && hops <= MAX_DEPENDENCY_HOPS; hops += 1) {
-    for (const module of frontier) {
-      for (const entryId of ontology.moduleEntries.get(module) ?? []) reach(entryId, hops - 1);
+  for (let hops = 0; frontier.length && hops <= MAX_DEPENDENCY_HOPS; hops += 1) {
+    for (const moduleAtDistance of frontier) {
+      for (const entryId of ontology.moduleEntries.get(moduleAtDistance) ?? []) reach(entryId, hops);
     }
     const next: string[] = [];
-    for (const module of frontier) {
-      for (const neighbour of ontology.moduleNeighbours.get(module) ?? []) {
+    for (const moduleAtDistance of frontier) {
+      for (const neighbour of ontology.moduleNeighbours.get(moduleAtDistance) ?? []) {
         if (visitedModules.has(neighbour)) continue;
         visitedModules.add(neighbour);
         next.push(neighbour);
