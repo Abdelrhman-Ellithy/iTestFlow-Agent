@@ -7,6 +7,7 @@ import { searchProjectContextByEmbedding } from "./embedding-store.service";
 import { searchProjectContextByTrigram } from "./trigram-search";
 import { fuseByReciprocalRank } from "./hybrid-ranking";
 import { dedupeNearDuplicateChunks } from "./near-duplicate-chunks";
+import { metadataFilterParams, workItemPathFilterSql, workItemTypeFilterSql, type MetadataFilter } from "./metadata-filter";
 
 /**
  * Shared FTS + semantic + trigram chunk search, used by both
@@ -46,6 +47,8 @@ export async function searchProjectChunksHybrid(input: {
   maxChunksPerWorkItem?: number;
   /** undefined -> resolve the deployment-configured backend; null -> force semantic off (tests). */
   embeddingProvider?: EmbeddingProvider | null;
+  /** Opt-in restriction by work item type / area path / iteration path. Never state. */
+  filter?: MetadataFilter;
 }): Promise<FusedChunkResult[]> {
   const scope = assertProjectScope(input.scope);
   const maxChunksPerWorkItem = Math.max(1, Math.trunc(input.maxChunksPerWorkItem ?? 1));
@@ -65,6 +68,11 @@ export async function searchProjectChunksHybrid(input: {
           WHERE tsv @@ to_tsquery('simple', @ftsQuery)
             AND project_id = @projectId
             AND azure_project_id = @azureProjectId
+            AND ${workItemTypeFilterSql()}
+            AND ${workItemPathFilterSql(
+              { projectId: "project_id", azureProjectId: "azure_project_id", azureWorkItemId: "azure_work_item_id" },
+              "mf_fts",
+            )}
         )
         SELECT chunk_id AS id, azure_work_item_id, work_item_type, title AS document_name,
                content, metadata_json, rank
@@ -79,6 +87,7 @@ export async function searchProjectChunksHybrid(input: {
         azureProjectId: scope.azureProjectId,
         maxChunksPerWorkItem,
         limit: input.topK,
+        ...metadataFilterParams(input.filter),
       },
     );
   } catch (error) {
@@ -96,6 +105,7 @@ export async function searchProjectChunksHybrid(input: {
         query: input.semanticQuery ?? input.rawQuery,
         topK: input.topK,
         maxChunksPerWorkItem,
+        filter: input.filter,
       });
     } catch (error) {
       console.error("Hybrid chunk search: semantic search failed; continuing without it.", error);
@@ -109,6 +119,7 @@ export async function searchProjectChunksHybrid(input: {
       query: input.rawQuery,
       topK: input.topK,
       maxChunksPerWorkItem,
+      filter: input.filter,
     });
   } catch (error) {
     console.error("Hybrid chunk search: trigram search failed; continuing without it.", error);

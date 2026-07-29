@@ -2,6 +2,7 @@ import "server-only";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { sqlAll } from "@/modules/shared/infrastructure/database/db";
+import { metadataFilterParams, workItemPathFilterSql, workItemTypeFilterSql, type MetadataFilter } from "./metadata-filter";
 
 /**
  * PostgreSQL trigram (pg_trgm) search: a third retrieval signal alongside full-text
@@ -66,6 +67,8 @@ export async function searchProjectContextByTrigram(input: {
   query: string;
   topK: number;
   maxChunksPerWorkItem?: number;
+  /** Opt-in restriction by work item type / area path / iteration path. Never state. */
+  filter?: MetadataFilter;
 }): Promise<TrigramContextChunk[]> {
   const scope = assertProjectScope(input.scope);
   const trigramQuery = prepareTrigramQuery(input.query);
@@ -85,6 +88,11 @@ export async function searchProjectContextByTrigram(input: {
         WHERE @trigramQuery <% lower(coalesce(title,'') || ' ' || coalesce(content,''))
           AND project_id = @projectId
           AND azure_project_id = @azureProjectId
+          AND ${workItemTypeFilterSql()}
+          AND ${workItemPathFilterSql(
+            { projectId: "project_id", azureProjectId: "azure_project_id", azureWorkItemId: "azure_work_item_id" },
+            "mf_trgm",
+          )}
       )
       SELECT chunk_id AS id, azure_work_item_id, work_item_type, title AS document_name,
              content, metadata_json, sim AS similarity
@@ -99,6 +107,7 @@ export async function searchProjectContextByTrigram(input: {
       azureProjectId: scope.azureProjectId,
       maxChunksPerWorkItem,
       limit: input.topK,
+      ...metadataFilterParams(input.filter),
     },
   );
 }
