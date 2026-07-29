@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { buildTestCaseGenerationMarkdownPrompt, buildRequirementAnalysisMarkdownPrompt } from "@/modules/llm/markdown-prompt-renderer";
 import type { ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema";
@@ -15,12 +16,15 @@ function kb(n: number): ProjectKnowledgeBase {
 
 describe("dbg", () => {
   it("dumps", () => {
+    const out: string[] = [];
     for (const tokens of [4_000, 16_000, 128_000, 200_000]) {
       for (const [label, b] of [["design", buildTestCaseGenerationMarkdownPrompt], ["analysis", buildRequirementAnalysisMarkdownPrompt]] as const) {
         const s = b({ currentProject: { azureProjectId: "a", azureProjectName: "b" }, targetRequirement: { id: 101, title: "Checkout" }, outputContract: {}, projectKnowledgeBase: kb(1000), maxInputTokens: tokens }).relevantProjectKnowledgeBase;
-        console.log(tokens, label, JSON.stringify({ m: s?.modules.length, br: s?.businessRules.length, st: s?.stateTransitions.length, g: s?.glossary.length, cd: s?.crossDependencies.length }));
+        out.push(`${tokens} ${label} ` + JSON.stringify({ m: s?.modules.length, br: s?.businessRules.length, st: s?.stateTransitions.length, g: s?.glossary.length, cd: s?.crossDependencies.length }));
       }
     }
+    writeFileSync("dbg-out.txt", out.join("
+"));
     expect(true).toBe(true);
   });
 });
