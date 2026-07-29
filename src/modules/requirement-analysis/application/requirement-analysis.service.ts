@@ -23,6 +23,10 @@ export async function runRequirementAnalysis(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  /** Model window, so the prompt can size compiled knowledge and related context to it. */
+  maxInputTokens?: number;
+  /** Workspace retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
   projectKnowledgeNotice?: string | null;
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   extraInstructions?: string;
@@ -90,6 +94,10 @@ export function buildRequirementAnalysisPromptDraft(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  /** Model window, so the prompt can size compiled knowledge and related context to it. */
+  maxInputTokens?: number;
+  /** Workspace retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
   projectKnowledgeNotice?: string | null;
   enabledChecklistItemIds?: RequirementAnalysisChecklistItemId[];
   extraInstructions?: string;
@@ -98,6 +106,9 @@ export function buildRequirementAnalysisPromptDraft(input: {
   const enabledChecklistItemIds = normalizeRequirementAnalysisChecklistItemIds(input.enabledChecklistItemIds);
   const systemPrompt = buildRequirementAnalysisSystemPrompt(enabledChecklistItemIds);
   const promptPayload = buildRequirementAnalysisMarkdownPrompt({
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
     currentProject: {
       azureProjectId: scope.azureProjectId,
       azureProjectName: scope.azureProjectName,

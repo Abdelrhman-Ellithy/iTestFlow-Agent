@@ -156,7 +156,7 @@ describe("buildRequirementAnalysisMarkdownPrompt", () => {
     expect(prompt).not.toContain("# Coverage Expectations");
   });
 
-  it("ranks knowledge by priority sources and term hits, keeps the first three, and truncates the tail", () => {
+  it("ranks knowledge by priority sources and term hits, and includes it all when the window allows", () => {
     const { prompt, relevantProjectKnowledgeBase } = buildRequirementAnalysisMarkdownPrompt({
       currentProject,
       targetRequirement,
@@ -164,25 +164,18 @@ describe("buildRequirementAnalysisMarkdownPrompt", () => {
       outputContract,
     });
 
-    // Modules: budget of 6 keeps priority-source items first, then original order among equal scores.
-    expect(relevantProjectKnowledgeBase?.modules.map((item) => item.id)).toEqual([
+    // Selection is by token budget, not a fixed count: this fixture fits comfortably in
+    // the default window, so nothing is dropped. What still matters is the ORDER —
+    // priority-source items first, then original order among equal scores.
+    expect(relevantProjectKnowledgeBase?.modules.slice(0, 3).map((item) => item.id)).toEqual([
       "mod-payments",
       "mod-cart",
       "mod-shipping",
-      "mod-returns",
-      "mod-invoicing",
-      "mod-catalog",
     ]);
-    // Business rules: priority source outranks term hits; zero-score items survive only inside the first three.
-    expect(relevantProjectKnowledgeBase?.businessRules.map((item) => item.id)).toEqual([
+    expect(relevantProjectKnowledgeBase?.businessRules.slice(0, 2).map((item) => item.id)).toEqual([
       "card-verify",
       "cod-limit",
-      "loyalty-round",
-      "stock-hold",
     ]);
-    expect(prompt).not.toContain("mod-search");
-    expect(prompt).not.toContain("mod-profile");
-    expect(prompt).not.toContain("gift-wrap");
 
     // Every knowledge section header survives selection, in order.
     expectOrdered(prompt, [
@@ -200,6 +193,52 @@ describe("buildRequirementAnalysisMarkdownPrompt", () => {
     expect(prompt).toContain("  - Transition: Cart -> Paid");
     expect(prompt).toContain("- OTP (term): One-time password used to confirm checkout payment");
     expect(prompt).toContain("- dep-pay-notify: Payments -> Notifications");
+  });
+
+  it("truncates compiled knowledge to a small model's window, keeping every category represented", () => {
+    // The previous hard caps (6 modules / 14 rules / …) ignored the model entirely, so a
+    // 213-entry knowledge base reached workflows as a fixed 22% slice. Selection is now
+    // sized to the window, with a per-category floor so nothing disappears completely.
+    const generous = buildRequirementAnalysisMarkdownPrompt({
+      currentProject, targetRequirement, projectKnowledgeBase: knowledgeBase(), outputContract,
+      maxInputTokens: 200_000,
+    }).relevantProjectKnowledgeBase;
+    const tiny = buildRequirementAnalysisMarkdownPrompt({
+      currentProject, targetRequirement, projectKnowledgeBase: knowledgeBase(), outputContract,
+      maxInputTokens: 1_000,
+    }).relevantProjectKnowledgeBase;
+
+    expect(tiny!.modules.length).toBeLessThanOrEqual(generous!.modules.length);
+    expect(tiny!.businessRules.length).toBeLessThanOrEqual(generous!.businessRules.length);
+    // Floors: a narrow window must not silently erase a whole category.
+    for (const category of ["modules", "businessRules", "glossary"] as const) {
+      if (generous![category].length > 0) expect(tiny![category].length).toBeGreaterThan(0);
+    }
+    // Whatever survives is still the highest-ranked, not an arbitrary prefix.
+    expect(tiny!.modules[0]!.id).toBe(generous!.modules[0]!.id);
+  });
+
+  it("keeps at least the workspace top-K related work items, adding more when the window allows", () => {
+    const related = Array.from({ length: 30 }, (_, index) => ({
+      id: String(900 + index),
+      title: `Related item ${index}`,
+      description: "x".repeat(600),
+    }));
+    const floor = 8;
+    const tiny = buildRequirementAnalysisMarkdownPrompt({
+      currentProject, targetRequirement, relatedWorkItems: related, outputContract,
+      maxInputTokens: 1_000, relatedWorkItemsFloor: floor,
+    }).prompt;
+    const generous = buildRequirementAnalysisMarkdownPrompt({
+      currentProject, targetRequirement, relatedWorkItems: related, outputContract,
+      maxInputTokens: 200_000, relatedWorkItemsFloor: floor,
+    }).prompt;
+
+    const included = (prompt: string) => related.filter((item) => prompt.includes(item.title)).length;
+    // top-K is a deliberate user setting, so it is a floor even on a tiny window...
+    expect(included(tiny)).toBeGreaterThanOrEqual(floor);
+    // ...and the budget only ever adds beyond it.
+    expect(included(generous)).toBeGreaterThan(included(tiny));
   });
 
   it("renders context items and extra instructions only when supplied", () => {

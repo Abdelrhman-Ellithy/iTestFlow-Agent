@@ -87,6 +87,10 @@ export async function POST(request: Request) {
       relatedWorkItems: data.relatedWorkItems,
       selectedContext: data.selectedContext,
       projectKnowledgeBase: data.projectKnowledgeBase,
+      // Size the prompt's compiled knowledge and related context to the caller's
+      // model, keeping the workspace top-K as a floor rather than a ceiling.
+      maxInputTokens: provider.maxInputTokens,
+      relatedWorkItemsFloor: data.retrievalTopK,
       projectKnowledgeNotice: data.projectKnowledgeNotice,
       options,
     });

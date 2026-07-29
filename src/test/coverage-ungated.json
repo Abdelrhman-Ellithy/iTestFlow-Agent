@@ -170,6 +170,7 @@
     "src/modules/workspace/workspace-settings.service.ts",
     "src/modules/workspace/workspace.service.ts",
     "src/scripts/manage-org.ts",
+    "src/scripts/repair-context-index.ts",
     "src/shared/lib/format.ts",
     "src/shared/lib/local-day.ts",
     "src/shared/lib/sanitize-azure-error.ts",

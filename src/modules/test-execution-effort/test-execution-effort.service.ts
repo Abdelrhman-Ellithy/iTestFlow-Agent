@@ -47,6 +47,10 @@ export async function generateTestExecutionEffort(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  /** Model window, so the prompt can size compiled knowledge and related context to it. */
+  maxInputTokens?: number;
+  /** Workspace retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
   projectKnowledgeNotice?: string | null;
   options: TestExecutionEffortOptions;
 }) {
@@ -112,6 +116,10 @@ export function buildTestExecutionEffortPromptDraft(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  /** Model window, so the prompt can size compiled knowledge and related context to it. */
+  maxInputTokens?: number;
+  /** Workspace retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
   projectKnowledgeNotice?: string | null;
   options: TestExecutionEffortOptions;
 }) {
@@ -150,11 +158,18 @@ export function buildTestExecutionEffortPrompt(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  /** Model window, so the prompt can size compiled knowledge and related context to it. */
+  maxInputTokens?: number;
+  /** Workspace retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
   projectKnowledgeNotice?: string | null;
   options: TestExecutionEffortOptions;
 }) {
   const scope = assertProjectScope(input.scope);
   return buildTestExecutionEffortMarkdownPrompt({
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
     currentProject: {
       azureProjectId: scope.azureProjectId,
       azureProjectName: scope.azureProjectName,

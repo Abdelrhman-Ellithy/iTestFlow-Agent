@@ -25,6 +25,11 @@ type MarkdownPromptInput = {
   maxInputTokens?: number;
   /** The workspace's retrieval top-K, honoured as a floor for related work items. */
   relatedWorkItemsFloor?: number;
+  /** Semantic ordering for knowledge entries; overrides keyword ranking when supplied. */
+  rankedKnowledgeKeys?: Partial<Record<
+    "modules" | "businessRules" | "stateTransitions" | "glossary" | "crossDependencies",
+    string[]
+  >>;
 };
 
 export function buildRequirementAnalysisMarkdownPrompt(input: MarkdownPromptInput) {
@@ -35,6 +40,8 @@ export function buildRequirementAnalysisMarkdownPrompt(input: MarkdownPromptInpu
   });
   const relevantKnowledge = selectRelevantProjectKnowledge({
     maxInputTokens: input.maxInputTokens,
+    weighting: "requirementAnalysis",
+    rankedOverride: input.rankedKnowledgeKeys,
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
       stringifyForPromptSearch(input.targetRequirement),
@@ -73,6 +80,7 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
   });
   const relevantKnowledge = selectRelevantProjectKnowledge({
     maxInputTokens: input.maxInputTokens,
+    rankedOverride: input.rankedKnowledgeKeys,
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
       stringifyForPromptSearch(input.targetRequirement),
@@ -114,6 +122,7 @@ export function buildExistingTestCaseReviewMarkdownPrompt(input: MarkdownPromptI
   });
   const relevantKnowledge = selectRelevantProjectKnowledge({
     maxInputTokens: input.maxInputTokens,
+    rankedOverride: input.rankedKnowledgeKeys,
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
       stringifyForPromptSearch(input.targetRequirement),
@@ -159,6 +168,7 @@ export function buildTestExecutionEffortMarkdownPrompt(
   });
   const relevantKnowledge = selectRelevantProjectKnowledge({
     maxInputTokens: input.maxInputTokens,
+    rankedOverride: input.rankedKnowledgeKeys,
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
       stringifyForPromptSearch(input.targetRequirement),
@@ -227,10 +237,35 @@ const DOMAIN_BRIEF_FLOORS = {
  * the output contract, and room for the response.
  */
 const KNOWLEDGE_BUDGET_SHARE = 0.35;
+
+/**
+ * How many slots each knowledge category earns per round, per workflow.
+ *
+ * Uniform round-robin is only defensible while everything fits. Once the corpus
+ * outgrows the window it silently equalises categories that are not equally useful:
+ * modelled on a 2,000-entry corpus, business rules — half the corpus and the single
+ * most load-bearing category for test work — received about a fifth of the slots.
+ *
+ * The weights encode what each workflow actually reasons over:
+ * - **Test design / effort**: business rules and state transitions ARE the test
+ *   conditions. Every rule is a positive case, a negative case and usually a boundary;
+ *   every transition is a path. Glossary and modules mainly disambiguate wording.
+ * - **Requirement analysis**: contradictions and gaps surface by comparing a
+ *   requirement against existing rules, but module and dependency structure matters
+ *   more here than for test authoring, because scope and impact are the question.
+ */
+const CATEGORY_WEIGHTS = {
+  testDesign: { businessRules: 4, stateTransitions: 3, glossary: 1, modules: 1, crossDependencies: 1 },
+  requirementAnalysis: { businessRules: 3, stateTransitions: 2, glossary: 2, modules: 2, crossDependencies: 2 },
+} as const;
+
+export type KnowledgeWeighting = keyof typeof CATEGORY_WEIGHTS;
 /** Share available to related work items, over and above the caller's top-K floor. */
 const RELATED_ITEMS_BUDGET_SHARE = 0.25;
 /** Used when the caller does not supply the workspace top-K. */
 const DEFAULT_RELATED_ITEMS_FLOOR = 8;
+/** Cap on what per-category floors may consume, so they cannot overrun the share. */
+const MAX_FLOOR_SHARE_OF_BUDGET = 0.5;
 
 function renderCurrentProject(project: CurrentProjectPromptInput) {
   return [
@@ -746,6 +781,10 @@ function selectRelevantProjectKnowledge(input: {
   prioritySourceIds: string[];
   /** From the caller's configured model; falls back conservatively when unknown. */
   maxInputTokens?: number;
+  /** Which category weighting to apply; defaults to the test-oriented profile. */
+  weighting?: KnowledgeWeighting;
+  /** Optional relevance override, ranked best-first per category (semantic ranking). */
+  rankedOverride?: Partial<Record<keyof typeof CATEGORY_WEIGHTS.testDesign, string[]>>;
 }): ProjectKnowledgeBase | null {
   const knowledgeBase = normalizeProjectKnowledge(input.projectKnowledgeBase);
   if (!knowledgeBase) return null;
@@ -758,6 +797,24 @@ function selectRelevantProjectKnowledge(input: {
     items: TItem[],
     describe: (item: TItem) => string,
   ): TItem[] => rankKnowledgeItems(items, queryTerms, prioritySourceIds, describe);
+
+  // A semantic ordering, when the caller supplied one, replaces keyword ranking —
+  // which matters only once the corpus outgrows the budget and ranking starts deciding
+  // inclusion rather than order. Entries the override does not mention keep their
+  // keyword rank behind those it does, so an incomplete override never loses content.
+  const applyOverride = <TItem extends { sourceWorkItemIds?: string[] }>(
+    items: TItem[],
+    keyOf: (item: TItem) => string,
+    order: string[] | undefined,
+  ): TItem[] => {
+    if (!order?.length) return items;
+    const position = new Map(order.map((key, index) => [key, index]));
+    return [...items].sort((first, second) => {
+      const a = position.get(keyOf(first)) ?? Number.MAX_SAFE_INTEGER;
+      const b = position.get(keyOf(second)) ?? Number.MAX_SAFE_INTEGER;
+      return a - b;
+    });
+  };
 
   const ranked = {
     modules: rank(knowledgeBase.modules, (item) =>
@@ -777,36 +834,60 @@ function selectRelevantProjectKnowledge(input: {
     ),
   };
 
+  const ordered = {
+    modules: applyOverride(ranked.modules, (item) => item.name, input.rankedOverride?.modules),
+    businessRules: applyOverride(ranked.businessRules, (item) => item.id, input.rankedOverride?.businessRules),
+    stateTransitions: applyOverride(ranked.stateTransitions, (item) => item.id, input.rankedOverride?.stateTransitions),
+    glossary: applyOverride(ranked.glossary, (item) => item.term, input.rankedOverride?.glossary),
+    crossDependencies: applyOverride(ranked.crossDependencies, (item) => item.id, input.rankedOverride?.crossDependencies),
+  };
+
   const budgetTokens = Math.floor(usableInputTokens(input.maxInputTokens) * KNOWLEDGE_BUDGET_SHARE);
+  const weights = CATEGORY_WEIGHTS[input.weighting ?? "testDesign"];
   const taken = {
     modules: 0, businessRules: 0, stateTransitions: 0, glossary: 0, crossDependencies: 0,
   } as Record<keyof typeof ranked, number>;
   const categories = Object.keys(ranked) as Array<keyof typeof ranked>;
 
+  // Floors first, so every category is represented before weighting takes over. They
+  // are capped at a fraction of the budget: a floor that cannot be afforded must not
+  // silently overrun the share and squeeze the work item itself out of the prompt.
+  const floorCeiling = Math.floor(budgetTokens * MAX_FLOOR_SHARE_OF_BUDGET);
   let usedTokens = 0;
+  for (const category of categories) {
+    while (
+      taken[category] < DOMAIN_BRIEF_FLOORS[category]
+      && taken[category] < ordered[category].length
+      && usedTokens < floorCeiling
+    ) {
+      usedTokens += estimateTokens(JSON.stringify(ordered[category][taken[category]]));
+      taken[category] += 1;
+    }
+  }
+
+  // Then weighted round-robin: a category with weight 4 takes four items per pass.
   let progressed = true;
   while (progressed) {
     progressed = false;
     for (const category of categories) {
-      const next = ranked[category][taken[category]];
-      if (next === undefined) continue;
-      const cost = estimateTokens(JSON.stringify(next));
-      // Below its floor a category is taken regardless of budget, so every category is
-      // represented even when the window is small.
-      const belowFloor = taken[category] < DOMAIN_BRIEF_FLOORS[category];
-      if (!belowFloor && usedTokens + cost > budgetTokens) continue;
-      taken[category] += 1;
-      usedTokens += cost;
-      progressed = true;
+      for (let slot = 0; slot < weights[category]; slot += 1) {
+        const next = ordered[category][taken[category]];
+        if (next === undefined) break;
+        const cost = estimateTokens(JSON.stringify(next));
+        if (usedTokens + cost > budgetTokens) break;
+        taken[category] += 1;
+        usedTokens += cost;
+        progressed = true;
+      }
     }
   }
 
   return {
-    modules: ranked.modules.slice(0, taken.modules),
-    businessRules: ranked.businessRules.slice(0, taken.businessRules),
-    stateTransitions: ranked.stateTransitions.slice(0, taken.stateTransitions),
-    glossary: ranked.glossary.slice(0, taken.glossary),
-    crossDependencies: ranked.crossDependencies.slice(0, taken.crossDependencies),
+    modules: ordered.modules.slice(0, taken.modules),
+    businessRules: ordered.businessRules.slice(0, taken.businessRules),
+    stateTransitions: ordered.stateTransitions.slice(0, taken.stateTransitions),
+    glossary: ordered.glossary.slice(0, taken.glossary),
+    crossDependencies: ordered.crossDependencies.slice(0, taken.crossDependencies),
   };
 }
 

@@ -91,6 +91,10 @@ export async function POST(request: Request) {
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
       projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      // Size the prompt's compiled knowledge and related context to the caller's
+      // model, keeping the workspace top-K as a floor rather than a ceiling.
+      maxInputTokens: provider.maxInputTokens,
+      relatedWorkItemsFloor: autoContext.retrievalTopK,
       projectKnowledgeNotice: knowledgeContext.promptNotice,
       enabledChecklistItemIds: parsed.data.enabledChecklistItemIds,
       extraInstructions: parsed.data.extraInstructions,
