@@ -123,12 +123,13 @@ describe("AiGenerationSection", () => {
 
     expect(await screen.findByText("Only workspace owners and admins can change these settings.")).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: "Allow External LLM" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Model input limit override" })).not.toBeInTheDocument();
   });
 
   it("saves only the changed External LLM setting", async () => {
     render(<AiGenerationSection />);
 
-    await screen.findByRole("heading", { name: "Workspace AI controls" });
+    await screen.findByRole("checkbox", { name: "Allow External LLM" });
     const externalLlmCheckbox = screen.getByRole("checkbox", { name: "Allow External LLM" });
     expect(externalLlmCheckbox).toBeChecked();
     expect(screen.getByText(/Auto Generate and saved provider credentials are unaffected/)).toBeInTheDocument();
@@ -149,7 +150,7 @@ describe("AiGenerationSection", () => {
   it("uses workspace-owned presets for the model input limit override", async () => {
     render(<AiGenerationSection />);
 
-    await screen.findByRole("heading", { name: "Workspace AI controls" });
+    await screen.findByRole("checkbox", { name: "Allow External LLM" });
     expect(screen.queryByLabelText("Model Input Limit Override (optional)")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Automatic" })).toHaveAttribute("aria-pressed", "true");
 
@@ -186,7 +187,7 @@ describe("AiGenerationSection", () => {
 
     render(<AiGenerationSection />);
 
-    await screen.findByRole("heading", { name: "Workspace AI controls" });
+    await screen.findByRole("checkbox", { name: "Allow External LLM" });
     fireEvent.click(screen.getByRole("button", { name: "Automatic" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -201,7 +202,7 @@ describe("AiGenerationSection", () => {
   it("uses the refreshed baseline so later cap and retry saves do not resend External LLM", async () => {
     render(<AiGenerationSection />);
 
-    await screen.findByRole("heading", { name: "Workspace AI controls" });
+    await screen.findByRole("checkbox", { name: "Allow External LLM" });
     fireEvent.click(screen.getByRole("checkbox", { name: "Allow External LLM" }));
     fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
 

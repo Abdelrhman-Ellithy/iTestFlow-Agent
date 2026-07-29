@@ -389,6 +389,10 @@ function OutputCapCard() {
     >
       {forbidden ? (
         <OwnerOnlyNotice />
+      ) : loading ? (
+        <div className="text-sm text-muted-foreground" aria-live="polite">
+          Loading workspace AI controls…
+        </div>
       ) : (
         <div className="space-y-4">
           <SettingCheckbox

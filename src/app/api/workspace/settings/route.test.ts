@@ -110,6 +110,13 @@ describe("workspace settings routes", () => {
     expect(mocks.getWorkspaceSettings).not.toHaveBeenCalled();
   });
 
+  it("rejects updates from a denied workspace role before writing settings", async () => {
+    mocks.resolveWorkspaceRequest.mockRejectedValue(new WorkspaceAccessError("Role denied."));
+    const response = await PUT(jsonRequest("/api/workspace/settings", { externalLlmEnabled: false }));
+    expect(response.status).toBe(403);
+    expect(mocks.upsertWorkspaceSettings).not.toHaveBeenCalled();
+  });
+
   it("rethrows unexpected resolution and persistence failures", async () => {
     const resolutionFailure = new Error("session store unavailable");
     mocks.resolveWorkspaceRequest.mockRejectedValueOnce(resolutionFailure);
