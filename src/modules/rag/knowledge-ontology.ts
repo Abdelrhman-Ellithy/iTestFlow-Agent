@@ -1,4 +1,4 @@
-import { canonicalizeProjectKnowledgeKey } from "./project-knowledge.schema";
+import { canonicalizeProjectKnowledgeKey } from "./project-knowledge-contracts";
 import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
 
 /**

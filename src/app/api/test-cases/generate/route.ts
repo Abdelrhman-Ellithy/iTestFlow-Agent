@@ -12,6 +12,7 @@ import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-
 import { generateTestCases } from "@/modules/test-case-design/application/test-case-generation.service";
 import { defaultTestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import { TestDesignOptionsRequestSchema } from "@/modules/test-case-design/test-design-options.schema";
+import { rankProjectKnowledgeForWorkItem } from "@/modules/rag/knowledge-relevance.service";
 import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
 import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
@@ -77,6 +78,17 @@ export async function POST(request: Request) {
       workflowType: "test_case_generation",
     });
     const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "test_case_design" });
+    // Selects the compiled knowledge this work item is actually connected to, by
+    // similarity and by the project's own module/provenance/dependency graph.
+    const rankedKnowledgeKeys = await rankProjectKnowledgeForWorkItem({
+      scope: trustedScope,
+      targetRequirement,
+      projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      contextWorkItemIds: [
+        ...autoContext.relatedWorkItems.map((item) => item.workItemId),
+        ...autoContext.selectedContext.map((item) => item.workItemId),
+      ],
+    });
     const result = await generateTestCases({
       scope: trustedScope,
       actor: ctx.userId,
@@ -89,7 +101,7 @@ export async function POST(request: Request) {
       // model, keeping the workspace top-K as a floor rather than a ceiling.
       maxInputTokens: provider.maxInputTokens,
       relatedWorkItemsFloor: autoContext.retrievalTopK,
-      rankedKnowledgeKeys: autoContext.rankedKnowledgeKeys ?? undefined,
+      rankedKnowledgeKeys: rankedKnowledgeKeys ?? undefined,
       projectKnowledgeNotice: knowledgeContext.promptNotice,
       options,
       extraInstructions: parsed.data.extraInstructions,

@@ -5,7 +5,6 @@ import type { AzureDevOpsAdapter } from "@/modules/integrations/azure-devops/azu
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { suggestContextStories } from "@/modules/context-selection/context-selection.service";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
-import { rankProjectKnowledgeByRelevance, type RankedKnowledgeKeys } from "./knowledge-relevance.service";
 import {
   requirementToRetrievalQuery,
   retrieveStoredProjectContext,
@@ -37,11 +36,6 @@ export type AutoContextResolution = {
   relatedWorkItems: LlmContextSource[];
   contextUsed: ContextUsedItem[];
   retrievalTopK: number;
-  /**
-   * Compiled knowledge entry keys in semantic relevance order for this work item.
-   * `null` when ranking is unavailable, which leaves prompts on keyword ranking.
-   */
-  rankedKnowledgeKeys: RankedKnowledgeKeys | null;
 };
 
 export async function resolveWorkflowContext(input: {
@@ -82,12 +76,6 @@ async function resolveWorkflowContextCore(input: {
 }): Promise<AutoContextResolution> {
   const scope = assertProjectScope(input.scope);
   const retrievalTopK = clampTopK(input.retrievalTopK);
-  // Ordering only. Which entries survive the prompt's token budget is decided later;
-  // this decides which ones are at the front of the queue when that trimming happens.
-  const rankedKnowledgeKeys = await rankProjectKnowledgeByRelevance({
-    scope,
-    queryText: requirementToRetrievalQuery(input.targetRequirement),
-  });
   const linkedRequirementContext = await loadLinkedRequirementContext({
     scope,
     adapter: input.adapter,
@@ -116,7 +104,6 @@ async function resolveWorkflowContextCore(input: {
         ),
       ),
       retrievalTopK,
-      rankedKnowledgeKeys,
     };
   }
 
@@ -138,7 +125,6 @@ async function resolveWorkflowContextCore(input: {
       relatedWorkItems: linkedRequirementContext,
       contextUsed: [],
       retrievalTopK,
-      rankedKnowledgeKeys,
     };
   }
   const llmSelected = await selectContextWithLLM({
@@ -171,7 +157,6 @@ async function resolveWorkflowContextCore(input: {
       ),
     ),
     retrievalTopK,
-    rankedKnowledgeKeys,
   };
 }
 

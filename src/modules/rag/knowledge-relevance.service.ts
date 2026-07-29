@@ -14,6 +14,8 @@ import {
   type RelevanceSelection,
   type ScoredEntry,
 } from "./knowledge-relevance-cutoff";
+import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
+import { requirementToRetrievalQuery } from "./project-context-store.service";
 import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
 
 /**
@@ -99,4 +101,34 @@ export async function rankProjectKnowledgeByRelevance(input: {
     console.error("Semantic knowledge ranking failed; falling back to keyword ranking.", error);
     return null;
   }
+}
+
+/**
+ * Convenience wrapper for the four workflow routes: derives the query text and the
+ * anchor work item ids from what a workflow already has in hand.
+ *
+ * Related and selected context items anchor the ontology alongside the target itself.
+ * They were chosen as relevant to this work item by linkage or retrieval, so knowledge
+ * extracted from them is relevant by the same reasoning.
+ */
+export async function rankProjectKnowledgeForWorkItem(input: {
+  scope: ProjectScope;
+  targetRequirement: Requirement;
+  projectKnowledgeBase: ProjectKnowledgeBase | null | undefined;
+  contextWorkItemIds?: string[];
+}): Promise<RankedKnowledgeKeys | null> {
+  const { targetRequirement } = input;
+  return rankProjectKnowledgeByRelevance({
+    scope: input.scope,
+    projectKnowledgeBase: input.projectKnowledgeBase,
+    // Area path and iteration path are included because they are where a board states
+    // module membership when the text does not.
+    queryText: [
+      requirementToRetrievalQuery(targetRequirement),
+      targetRequirement.areaPath ?? "",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    relatedWorkItemIds: [targetRequirement.id, ...(input.contextWorkItemIds ?? [])],
+  });
 }
