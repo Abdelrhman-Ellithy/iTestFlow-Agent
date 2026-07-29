@@ -14,6 +14,7 @@ const sessionService = vi.hoisted(() => {
 });
 
 const workspaceService = vi.hoisted(() => ({
+  getWorkspaceById: vi.fn(),
   resolveActiveWorkspaceForUser: vi.fn(),
 }));
 
@@ -35,7 +36,11 @@ vi.mock("@/modules/auth/session.service", () => sessionService);
 vi.mock("./workspace.service", () => workspaceService);
 vi.mock("./workspace-access.service", () => accessService);
 
-import { resolveWorkspaceRequest, workspaceRequestError } from "./workspace-request";
+import {
+  resolveWorkspaceRequest,
+  resolveWorkspaceRequestForWorkspace,
+  workspaceRequestError,
+} from "./workspace-request";
 
 const session = { sessionId: "sess-1", userId: "user-1", activeWorkspaceId: "ws-login" };
 const workspace = {
@@ -50,6 +55,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   sessionService.requireSession.mockResolvedValue(session);
   workspaceService.resolveActiveWorkspaceForUser.mockResolvedValue(workspace);
+  workspaceService.getWorkspaceById.mockResolvedValue(workspace);
   accessService.requireWorkspaceAccess.mockResolvedValue({ role: "member" });
   accessService.requireWorkspaceRole.mockResolvedValue({ role: "owner" });
 });
@@ -99,6 +105,33 @@ describe("resolveWorkspaceRequest", () => {
     );
     accessService.requireWorkspaceRole.mockRejectedValue(denial);
     await expect(resolveWorkspaceRequest(["owner"])).rejects.toBe(denial);
+  });
+});
+
+describe("resolveWorkspaceRequestForWorkspace", () => {
+  it("rechecks member access for the explicitly requested workspace", async () => {
+    await expect(resolveWorkspaceRequestForWorkspace("ws-requested")).resolves.toEqual({
+      userId: "user-1",
+      workspace,
+    });
+    expect(workspaceService.getWorkspaceById).toHaveBeenCalledWith("ws-requested");
+    expect(accessService.requireWorkspaceAccess).toHaveBeenCalledWith("user-1", "ws-1");
+    expect(workspaceService.resolveActiveWorkspaceForUser).not.toHaveBeenCalled();
+  });
+
+  it("uses the requested workspace's role check when roles are supplied", async () => {
+    await resolveWorkspaceRequestForWorkspace("ws-requested", ["owner", "admin"]);
+    expect(accessService.requireWorkspaceRole).toHaveBeenCalledWith("user-1", "ws-1", ["owner", "admin"]);
+    expect(accessService.requireWorkspaceAccess).not.toHaveBeenCalled();
+  });
+
+  it("does not check access when the requested workspace is unavailable", async () => {
+    workspaceService.getWorkspaceById.mockResolvedValue(null);
+    await expect(resolveWorkspaceRequestForWorkspace("ws-missing")).rejects.toThrow(
+      "No workspace membership found for this user.",
+    );
+    expect(accessService.requireWorkspaceAccess).not.toHaveBeenCalled();
+    expect(accessService.requireWorkspaceRole).not.toHaveBeenCalled();
   });
 });
 

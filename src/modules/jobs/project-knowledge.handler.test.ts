@@ -71,7 +71,11 @@ describe("Project Knowledge worker handler", () => {
     mocks.resolveUserLlmConfig.mockResolvedValue({
       provider: "openai", apiKey: "resolved-at-runtime", model: "gpt-test", baseUrl: undefined, maxInputTokens: 16000,
     });
-    mocks.getWorkspaceSettings.mockResolvedValue({ maxOutputTokenCap: 8000, llmRetryAttempts: 2 });
+    mocks.getWorkspaceSettings.mockResolvedValue({
+      maxOutputTokenCap: 8000,
+      modelInputTokenLimitOverride: 128000,
+      llmRetryAttempts: 2,
+    });
     mocks.createLLMProvider.mockReturnValue(fakeLlmProvider());
     mocks.loadCompletedJobBatch.mockResolvedValue(null);
     mocks.completeJobBatch.mockResolvedValue(true);
@@ -112,7 +116,10 @@ describe("Project Knowledge worker handler", () => {
     }), ctx);
 
     expect(mocks.resolveUserLlmConfig).toHaveBeenCalledWith("workspace-1", "owner-1");
-    expect(mocks.createLLMProvider).toHaveBeenCalledWith(expect.objectContaining({ apiKey: "resolved-at-runtime" }));
+    expect(mocks.createLLMProvider).toHaveBeenCalledWith(expect.objectContaining({
+      apiKey: "resolved-at-runtime",
+      maxInputTokens: 128000,
+    }));
     expect(mocks.preview).toHaveBeenCalledWith(expect.objectContaining({
       actor: "owner-1",
       mode: "incremental",

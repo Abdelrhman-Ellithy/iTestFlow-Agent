@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   requireWorkflowContext: vi.fn(),
+  requireExternalLlmEnabled: vi.fn(),
   getUserAzureAdapter: vi.fn(),
   resolveProjectScope: vi.fn(),
   fetchLinkedTestCases: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal
   return {
     ...actual,
     requireWorkflowContext: mocks.requireWorkflowContext,
+    requireExternalLlmEnabled: mocks.requireExternalLlmEnabled,
     getUserAzureAdapter: mocks.getUserAzureAdapter,
   };
 });
@@ -78,6 +80,7 @@ describe("POST /api/existing-test-case-review/manual/submit", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.requireWorkflowContext.mockResolvedValue({ userId: "user-1", workspace: { id: "ws-1" } });
+    mocks.requireExternalLlmEnabled.mockResolvedValue(undefined);
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
     mocks.getUserAzureAdapter.mockResolvedValue(fakeAzureAdapter({
       fetchLinkedTestCases: mocks.fetchLinkedTestCases,

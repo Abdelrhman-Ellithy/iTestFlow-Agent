@@ -2,7 +2,12 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { buildBugReportPromptDraft } from "@/modules/bug-reporting/bug-reporting.service";
 import { BugAttachmentDescriptorSchema, BugCustomFieldValueSchema, BugRelatedTestCaseContextSchema } from "@/modules/bug-reporting/schemas/bug-report.schema";
-import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  requireExternalLlmEnabled,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
@@ -27,6 +32,7 @@ export async function POST(request: Request) {
 
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireExternalLlmEnabled(ctx);
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const parentStory = parsed.data.parentStoryId

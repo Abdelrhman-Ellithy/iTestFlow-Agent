@@ -3,13 +3,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   requireWorkflowContext: vi.fn(),
   requireWorkflowRole: vi.fn(),
+  requireExternalLlmEnabled: vi.fn(),
   resolveProjectScope: vi.fn(),
   finalizeManualProjectKnowledge: vi.fn(),
 }));
 
 vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/modules/credentials/scoped-resolution.service")>();
-  return { ...actual, requireWorkflowContext: mocks.requireWorkflowContext, requireWorkflowRole: mocks.requireWorkflowRole };
+  return {
+    ...actual,
+    requireWorkflowContext: mocks.requireWorkflowContext,
+    requireWorkflowRole: mocks.requireWorkflowRole,
+    requireExternalLlmEnabled: mocks.requireExternalLlmEnabled,
+  };
 });
 vi.mock("@/modules/projects/workspace-projects.service", () => ({ resolveProjectScope: mocks.resolveProjectScope }));
 vi.mock("@/modules/rag/project-knowledge-actions.service", () => ({
@@ -33,6 +39,7 @@ describe("POST /api/context/knowledge/manual/finalize compatibility adapter", ()
     vi.clearAllMocks();
     mocks.requireWorkflowContext.mockResolvedValue({ userId: "user-1", workspace: { id: "ws-1" } });
     mocks.requireWorkflowRole.mockResolvedValue(undefined);
+    mocks.requireExternalLlmEnabled.mockResolvedValue(undefined);
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
     mocks.finalizeManualProjectKnowledge.mockResolvedValue({ outcome: "ready_to_publish", draftId: "draft-1" });
   });

@@ -52,6 +52,7 @@ import type { ProjectUser } from "@/types/azure-devops";
 import { cn } from "@/lib/utils";
 import { countEditedById } from "@/shared/lib/edited-count";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
+import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
 
 import { buildCommentBodyWithMentions } from "./lib/comment-helpers";
 import {
@@ -71,6 +72,7 @@ export function RequirementsAnalysisClient() {
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
   const [mode, setMode] = useState<WorkflowMode>("auto");
+  const externalLlmAvailability = useExternalLlmAvailability(scope?.workspaceId);
   const [extraInstructions, setExtraInstructions] = useState("");
   const [enabledChecklistItemIds, setEnabledChecklistItemIds] = useState<RequirementAnalysisChecklistItemId[]>(() => [...allRequirementAnalysisChecklistItemIds]);
   const [analysis, setAnalysis] = useState<ApiState<RequirementAnalysisRunResult>>({
@@ -91,6 +93,7 @@ export function RequirementsAnalysisClient() {
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
+  const manualOperationVersionRef = useRef(0);
   const [findings, setFindings] = useState<RequirementFinding[]>([]);
   const [selectedFindingIds, setSelectedFindingIds] = useState<string[]>([]);
   const [findingsReviewVersion, setFindingsReviewVersion] = useState(0);
@@ -124,6 +127,16 @@ export function RequirementsAnalysisClient() {
     setPushState({ loading: false, error: null, data: null });
     setSelectedMentionUserIds([]);
   }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
+  useEffect(() => {
+    if (externalLlmAvailability.enabled || mode !== "manual") return;
+    manualOperationVersionRef.current += 1;
+    cancelPreparation();
+    setMode("auto");
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitLoading(false);
+    setManualSubmitError(null);
+  }, [cancelPreparation, externalLlmAvailability.enabled, mode]);
   const sortedFindingList = useMemo(
     () => sortFindingsBySeverity(findings),
     [findings],
@@ -291,8 +304,9 @@ export function RequirementsAnalysisClient() {
   }
 
   async function prepareManualPrompt() {
-    if (!scope || !targetWorkItemId || !checklistSelectionValid || !extraInstructionsValid) return;
+    if (!externalLlmAvailability.enabled || !scope || !targetWorkItemId || !checklistSelectionValid || !extraInstructionsValid) return;
     if (prep.isRunning) return;
+    const manualOperationVersion = manualOperationVersionRef.current;
     setAnalysis({ loading: false, error: null, data: null });
     setFindings([]);
     setSelectedFindingIds([]);
@@ -308,15 +322,18 @@ export function RequirementsAnalysisClient() {
       ),
     );
     if (data) {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualDraft({ loading: false, error: null, data });
       scrollToNextStep(promptSectionRef);
     } else {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualDraft({ loading: false, error: null, data: null });
     }
   }
 
   async function submitManualResponse() {
-    if (!scope || !targetWorkItemId || !manualDraft.data || !manualResponse.trim()) return;
+    if (!externalLlmAvailability.enabled || !scope || !targetWorkItemId || !manualDraft.data || !manualResponse.trim()) return;
+    const manualOperationVersion = manualOperationVersionRef.current;
     setManualSubmitLoading(true);
     setManualSubmitError(null);
     try {
@@ -330,12 +347,14 @@ export function RequirementsAnalysisClient() {
         contextCitations: manualDraft.data.contextCitations,
         retrievalTopK: manualDraft.data.retrievalTopK,
       });
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       applyAnalysisResult(data);
       scrollToNextStep(findingsCardRef, findingsHeadingRef);
     } catch (error) {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualSubmitError(caughtErrorMessage(error, "External LLM response validation failed."));
     } finally {
-      setManualSubmitLoading(false);
+      if (manualOperationVersion === manualOperationVersionRef.current) setManualSubmitLoading(false);
     }
   }
 
@@ -437,6 +456,7 @@ export function RequirementsAnalysisClient() {
             action={
               <GenerationModeToggle
                 mode={mode}
+                externalLlmAvailability={externalLlmAvailability}
                 onChange={(nextMode) => {
                   setHasUnfinishedWork(true);
                   setMode(nextMode);
@@ -466,7 +486,7 @@ export function RequirementsAnalysisClient() {
                     {gen.isRunning ? "Analyzing..." : "Analyze"}
                   </Button>
                 ) : (
-                  <Button className="w-full min-w-[9rem] lg:w-auto" onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !checklistSelectionValid || !extraInstructionsValid}>
+                  <Button className="w-full min-w-[9rem] lg:w-auto" onClick={prepareManualPrompt} disabled={!externalLlmAvailability.enabled || !scope || !targetWorkItemId || prep.isRunning || !checklistSelectionValid || !extraInstructionsValid}>
                     {prep.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                     {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
                   </Button>

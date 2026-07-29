@@ -119,7 +119,7 @@ async function loadInitiatingUserProvider(workspaceId: string, userId: string) {
     apiKey: llm.apiKey,
     model: llm.model,
     baseUrl: llm.baseUrl,
-    maxInputTokens: llm.maxInputTokens,
+    maxInputTokens: settings?.modelInputTokenLimitOverride ?? undefined,
     maxOutputTokenCap: settings?.maxOutputTokenCap ?? getMaxOutputTokenCapDefaultFromEnv(),
     retryAttempts: settings?.llmRetryAttempts ?? DEFAULT_RETRY_ATTEMPTS,
   });

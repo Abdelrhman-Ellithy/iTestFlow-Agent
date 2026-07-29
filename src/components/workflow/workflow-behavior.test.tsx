@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createElement } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ApiError } from "./api-error";
 import { formatElapsedTime } from "./ai-generation-time";
@@ -11,13 +11,39 @@ import { GenerationModeToggle } from "./generation-mode-toggle";
 import { validateGeneratedTestCase } from "./generated-test-cases-review";
 import { validateRequirementFinding } from "./requirement-findings-review";
 
+afterEach(cleanup);
+
 describe("critical workflow UI behavior", () => {
   it("exposes generation modes as tabs and reports user selection", async () => {
     const onChange = vi.fn();
-    render(createElement(GenerationModeToggle, { mode: "auto", onChange }));
+    render(createElement(GenerationModeToggle, {
+      mode: "auto",
+      onChange,
+      externalLlmAvailability: {
+        status: "enabled",
+        enabled: true,
+        message: "External LLM is available for this workspace.",
+      },
+    }));
     expect(screen.getByRole("tab", { name: "Auto Generate" })).toHaveAttribute("aria-selected", "true");
     await userEvent.click(screen.getByRole("tab", { name: "External LLM" }));
     expect(onChange).toHaveBeenCalledWith("manual");
+  });
+
+  it("keeps External LLM visible but disabled with an explanation when unavailable", () => {
+    render(createElement(GenerationModeToggle, {
+      mode: "manual",
+      onChange: vi.fn(),
+      externalLlmAvailability: {
+        status: "disabled",
+        enabled: false,
+        message: "External LLM is disabled by a workspace owner or admin.",
+      },
+    }));
+
+    expect(screen.getByRole("tab", { name: "External LLM" })).toBeDisabled();
+    expect(screen.getByRole("tab", { name: "Auto Generate" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("status")).toHaveTextContent("disabled by a workspace owner or admin");
   });
 
   it("validates editable generated cases before publishing", () => {

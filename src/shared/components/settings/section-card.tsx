@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
+import { Checkbox } from "@/components/ui/checkbox"
 import { cn } from "@/lib/utils"
 
 export type StatusTone = "success" | "warning" | "destructive" | "muted" | "info"
@@ -70,6 +71,46 @@ export function Field({
       {description ? (
         <div className="mt-2 text-xs leading-5 text-muted-foreground">{description}</div>
       ) : null}
+    </div>
+  )
+}
+
+/** A labelled settings checkbox with an always-associated explanatory text. */
+export function SettingCheckbox({
+  id,
+  label,
+  description,
+  checked,
+  onCheckedChange,
+  disabled,
+}: {
+  id: string
+  label: string
+  description: React.ReactNode
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+  disabled?: boolean
+}) {
+  const descriptionId = `${id}-description`
+
+  return (
+    <div className="flex items-start gap-3">
+      <Checkbox
+        id={id}
+        checked={checked}
+        onCheckedChange={(nextChecked) => onCheckedChange(nextChecked === true)}
+        disabled={disabled}
+        aria-describedby={descriptionId}
+        className="mt-0.5 size-5"
+      />
+      <div className="min-w-0">
+        <label htmlFor={id} className="block text-sm font-medium text-foreground">
+          {label}
+        </label>
+        <p id={descriptionId} className="mt-1 text-xs leading-5 text-muted-foreground">
+          {description}
+        </p>
+      </div>
     </div>
   )
 }

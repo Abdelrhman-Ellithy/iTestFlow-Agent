@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 
-import { describeDb } from "@/test/db";
+import { cleanupFixtures, describeDb, seedWorkspace, uniqueTestId } from "@/test/db";
 import { resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import { ensureBootstrapOwner } from "@/modules/auth/bootstrap.service";
 import {
@@ -60,12 +60,15 @@ describeDb("workspace settings (DB-backed)", () => {
       workspaceId,
       retrievalTopK: 12,
       maxOutputTokenCap: 64000,
+      modelInputTokenLimitOverride: 128000,
       updatedByUserId: null,
     });
     expect(view).toEqual({
       retrievalTopK: 12,
       maxOutputTokenCap: 64000,
+      modelInputTokenLimitOverride: 128000,
       llmRetryAttempts: null,
+      externalLlmEnabled: true,
       manualBaselineMinutes: null,
       reviewBaselineMinutes: null,
     });
@@ -77,12 +80,15 @@ describeDb("workspace settings (DB-backed)", () => {
       workspaceId,
       retrievalTopK: null,
       maxOutputTokenCap: null,
+      modelInputTokenLimitOverride: null,
       updatedByUserId: null,
     });
     expect(await getWorkspaceSettings(workspaceId)).toEqual({
       retrievalTopK: null,
       maxOutputTokenCap: null,
+      modelInputTokenLimitOverride: null,
       llmRetryAttempts: null,
+      externalLlmEnabled: true,
       manualBaselineMinutes: null,
       reviewBaselineMinutes: null,
     });
@@ -96,7 +102,9 @@ describeDb("workspace settings (DB-backed)", () => {
     expect(await getWorkspaceSettings(workspaceId)).toEqual({
       retrievalTopK: 5,
       maxOutputTokenCap: 16000,
+      modelInputTokenLimitOverride: null,
       llmRetryAttempts: null,
+      externalLlmEnabled: true,
       manualBaselineMinutes: null,
       reviewBaselineMinutes: null,
     });
@@ -109,7 +117,9 @@ describeDb("workspace settings (DB-backed)", () => {
     expect(await getWorkspaceSettings(workspaceId)).toEqual({
       retrievalTopK: 5,
       maxOutputTokenCap: 64000,
+      modelInputTokenLimitOverride: null,
       llmRetryAttempts: null,
+      externalLlmEnabled: true,
       manualBaselineMinutes: null,
       reviewBaselineMinutes: null,
     });
@@ -118,7 +128,9 @@ describeDb("workspace settings (DB-backed)", () => {
     expect(await getWorkspaceSettings(workspaceId)).toEqual({
       retrievalTopK: 8,
       maxOutputTokenCap: 64000,
+      modelInputTokenLimitOverride: null,
       llmRetryAttempts: null,
+      externalLlmEnabled: true,
       manualBaselineMinutes: null,
       reviewBaselineMinutes: null,
     });
@@ -127,9 +139,79 @@ describeDb("workspace settings (DB-backed)", () => {
     expect(await getWorkspaceSettings(workspaceId)).toEqual({
       retrievalTopK: null,
       maxOutputTokenCap: 64000,
+      modelInputTokenLimitOverride: null,
       llmRetryAttempts: null,
+      externalLlmEnabled: true,
       manualBaselineMinutes: null,
       reviewBaselineMinutes: null,
     });
+  });
+
+  it("round-trips the External LLM setting and preserves it during unrelated updates", async () => {
+    await upsertWorkspaceSettings({ workspaceId, externalLlmEnabled: false, updatedByUserId: null });
+    expect((await getWorkspaceSettings(workspaceId))?.externalLlmEnabled).toBe(false);
+
+    await upsertWorkspaceSettings({ workspaceId, llmRetryAttempts: 2, updatedByUserId: null });
+    expect((await getWorkspaceSettings(workspaceId))?.externalLlmEnabled).toBe(false);
+
+    await upsertWorkspaceSettings({ workspaceId, externalLlmEnabled: true, updatedByUserId: null });
+    expect((await getWorkspaceSettings(workspaceId))?.externalLlmEnabled).toBe(true);
+  });
+
+  it("merges concurrent partial workspace AI controls", async () => {
+    // Begin without a row so one concurrent write inserts it and the others take
+    // the conflict path. Each request must update only its supplied setting.
+    await sqlRun(`DELETE FROM workspace_settings WHERE workspace_id = @id`, { id: workspaceId });
+
+    await Promise.all([
+      upsertWorkspaceSettings({ workspaceId, externalLlmEnabled: false, updatedByUserId: null }),
+      upsertWorkspaceSettings({ workspaceId, maxOutputTokenCap: 64000, updatedByUserId: null }),
+      upsertWorkspaceSettings({ workspaceId, modelInputTokenLimitOverride: 128000, updatedByUserId: null }),
+      upsertWorkspaceSettings({ workspaceId, llmRetryAttempts: 3, updatedByUserId: null }),
+    ]);
+
+    expect(await getWorkspaceSettings(workspaceId)).toEqual({
+      retrievalTopK: null,
+      maxOutputTokenCap: 64000,
+      modelInputTokenLimitOverride: 128000,
+      llmRetryAttempts: 3,
+      externalLlmEnabled: false,
+      manualBaselineMinutes: null,
+      reviewBaselineMinutes: null,
+    });
+  });
+
+  it("keeps External LLM settings isolated between workspaces", async () => {
+    const firstWorkspaceId = uniqueTestId("ws_external_llm_first");
+    const secondWorkspaceId = uniqueTestId("ws_external_llm_second");
+    await seedWorkspace({
+      id: firstWorkspaceId,
+      orgUrl: `https://dev.azure.com/${firstWorkspaceId}`,
+    });
+    await seedWorkspace({
+      id: secondWorkspaceId,
+      orgUrl: `https://dev.azure.com/${secondWorkspaceId}`,
+    });
+
+    try {
+      await upsertWorkspaceSettings({
+        workspaceId: firstWorkspaceId,
+        externalLlmEnabled: false,
+        updatedByUserId: null,
+      });
+      await upsertWorkspaceSettings({
+        workspaceId: secondWorkspaceId,
+        externalLlmEnabled: true,
+        updatedByUserId: null,
+      });
+
+      expect((await getWorkspaceSettings(firstWorkspaceId))?.externalLlmEnabled).toBe(false);
+      expect((await getWorkspaceSettings(secondWorkspaceId))?.externalLlmEnabled).toBe(true);
+    } finally {
+      await cleanupFixtures({
+        workspaceIds: [firstWorkspaceId, secondWorkspaceId],
+        userIds: [],
+      });
+    }
   });
 });

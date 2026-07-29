@@ -416,6 +416,79 @@ export async function loadProjectKnowledgeManualBatchResults(input: {
   };
 }
 
+export type ResumableProjectKnowledgeManualDraft = {
+  draft: ProjectKnowledgeDraft;
+  batches: Array<{
+    batchIndex: number;
+    systemPrompt: string;
+    userPrompt: string;
+  }>;
+  /** Batch indexes whose persisted output has already passed server validation. */
+  validatedBatchIndexes: number[];
+};
+
+/**
+ * Loads the newest persisted External LLM draft that can still accept batch
+ * responses. This deliberately reads prompts only through the protected manual
+ * workflow; status endpoints continue to expose metadata only.
+ */
+export async function loadLatestResumableProjectKnowledgeManualDraft(input: {
+  scope: ProjectScope;
+}): Promise<ResumableProjectKnowledgeManualDraft | null> {
+  const scope = assertProjectScope(input.scope);
+  await expireManualProjectKnowledgeDrafts(scope);
+  await supersedeOutdatedContractDrafts(scope);
+
+  const row = await sqlGet<DraftRow>(
+    `
+      SELECT drafts.*
+      FROM project_knowledge_drafts drafts
+      LEFT JOIN project_knowledge_base base
+        ON base.project_id = drafts.project_id AND base.azure_project_id = drafts.azure_project_id
+      WHERE drafts.workspace_id = @workspaceId
+        AND drafts.project_id = @projectId AND drafts.azure_project_id = @azureProjectId
+        AND drafts.generation_mode = 'manual' AND drafts.status = 'awaiting_input'
+        AND drafts.base_revision_id IS NOT DISTINCT FROM base.active_revision_id
+      ORDER BY drafts.updated_at DESC, drafts.id DESC
+      LIMIT 1
+    `,
+    {
+      workspaceId: scope.workspaceId,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+    },
+  );
+  if (!row) return null;
+
+  const batchRows = await sqlAll<{
+    batch_index: number;
+    status: string;
+    validated_output: unknown;
+    system_prompt: string;
+    user_prompt: string;
+  }>(
+    `
+      SELECT batch_index, status, validated_output, system_prompt, user_prompt
+      FROM project_knowledge_draft_batches
+      WHERE draft_id = @draftId
+      ORDER BY batch_index
+    `,
+    { draftId: row.id },
+  );
+
+  return {
+    draft: toDraft(row),
+    batches: batchRows.map((batch) => ({
+      batchIndex: batch.batch_index,
+      systemPrompt: batch.system_prompt,
+      userPrompt: batch.user_prompt,
+    })),
+    validatedBatchIndexes: batchRows
+      .filter((batch) => batch.status === "validated" && batch.validated_output !== null)
+      .map((batch) => batch.batch_index),
+  };
+}
+
 export async function saveProjectKnowledgeManualBatchResult(input: {
   scope: ProjectScope;
   draftId: string;

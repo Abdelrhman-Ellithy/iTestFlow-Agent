@@ -4,7 +4,7 @@ import type { NextResponse } from "next/server";
 
 import { requireSession, SessionError } from "@/modules/auth/session.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
-import { resolveActiveWorkspaceForUser, type WorkspaceRef } from "./workspace.service";
+import { getWorkspaceById, resolveActiveWorkspaceForUser, type WorkspaceRef } from "./workspace.service";
 import {
   requireWorkspaceAccess,
   requireWorkspaceRole,
@@ -22,6 +22,26 @@ export type WorkspaceRequestContext = { userId: string; workspace: WorkspaceRef 
 export async function resolveWorkspaceRequest(roles?: WorkspaceRole[]): Promise<WorkspaceRequestContext> {
   const session = await requireSession();
   const workspace = await resolveActiveWorkspaceForUser(session.userId, session.activeWorkspaceId);
+  if (!workspace) throw new WorkspaceAccessError("No workspace membership found for this user.");
+  if (roles && roles.length) {
+    await requireWorkspaceRole(session.userId, workspace.id, roles);
+  } else {
+    await requireWorkspaceAccess(session.userId, workspace.id);
+  }
+  return { userId: session.userId, workspace };
+}
+
+/**
+ * Resolves an explicitly requested workspace only after re-checking the caller's
+ * active membership. Use this for member-readable APIs with a workspaceId query
+ * parameter; client input never selects a workspace without authorization.
+ */
+export async function resolveWorkspaceRequestForWorkspace(
+  workspaceId: string,
+  roles?: WorkspaceRole[],
+): Promise<WorkspaceRequestContext> {
+  const session = await requireSession();
+  const workspace = await getWorkspaceById(workspaceId);
   if (!workspace) throw new WorkspaceAccessError("No workspace membership found for this user.");
   if (roles && roles.length) {
     await requireWorkspaceRole(session.userId, workspace.id, roles);

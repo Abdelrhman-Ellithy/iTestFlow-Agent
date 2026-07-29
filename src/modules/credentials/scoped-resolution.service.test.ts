@@ -54,6 +54,7 @@ import {
   getUserAzureAdapter,
   getUserAzureAdapterOrgLevel,
   getUserLLMProvider,
+  requireExternalLlmEnabled,
   requireWorkflowContext,
   requireWorkflowRole,
   WorkflowAuthError,
@@ -102,6 +103,7 @@ beforeEach(() => {
     model: "gpt-test",
     apiKey: "sk-secret",
     baseUrl: "https://llm.example",
+    maxInputTokens: 32000,
   });
   mocks.markUserAzurePatExpired.mockResolvedValue(undefined);
   mocks.createLLMProvider.mockReturnValue(fakeLlmProvider());
@@ -165,6 +167,27 @@ describe("requireWorkflowRole", () => {
     const error = await captureAuthError(requireWorkflowRole(ctx, ["owner"], "Owners only."));
     expect(error.status).toBe(403);
     expect(error.message).toBe("Owners only.");
+  });
+});
+
+describe("requireExternalLlmEnabled", () => {
+  it("allows manual External LLM workflows when the workspace has no settings row", async () => {
+    await expect(requireExternalLlmEnabled(ctx)).resolves.toBeUndefined();
+    expect(mocks.getWorkspaceSettings).toHaveBeenCalledWith("ws-1");
+  });
+
+  it("allows manual External LLM workflows when explicitly enabled", async () => {
+    mocks.getWorkspaceSettings.mockResolvedValue({ externalLlmEnabled: true });
+
+    await expect(requireExternalLlmEnabled(ctx)).resolves.toBeUndefined();
+  });
+
+  it("rejects manual External LLM workflows when disabled by the workspace", async () => {
+    mocks.getWorkspaceSettings.mockResolvedValue({ externalLlmEnabled: false });
+
+    const error = await captureAuthError(requireExternalLlmEnabled(ctx));
+    expect(error.status).toBe(403);
+    expect(error.message).toBe("External LLM is disabled by a workspace owner or admin.");
   });
 });
 
@@ -233,8 +256,12 @@ describe("getUserLLMProvider", () => {
     expect(mocks.createLLMProvider).not.toHaveBeenCalled();
   });
 
-  it("builds the provider from the user's credentials and workspace-level caps", async () => {
-    mocks.getWorkspaceSettings.mockResolvedValue({ maxOutputTokenCap: 64000, llmRetryAttempts: 3 });
+  it("builds the provider from the user's credentials and workspace-level limits", async () => {
+    mocks.getWorkspaceSettings.mockResolvedValue({
+      maxOutputTokenCap: 64000,
+      modelInputTokenLimitOverride: 128000,
+      llmRetryAttempts: 3,
+    });
     const provider = fakeLlmProvider();
     mocks.createLLMProvider.mockReturnValue(provider);
 
@@ -245,6 +272,7 @@ describe("getUserLLMProvider", () => {
       apiKey: "sk-secret",
       model: "gpt-test",
       baseUrl: "https://llm.example",
+      maxInputTokens: 128000,
       maxOutputTokenCap: 64000,
       retryAttempts: 3,
     });
