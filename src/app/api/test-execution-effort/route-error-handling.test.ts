@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
   requireWorkflowContext: vi.fn(),
   getUserAzureAdapter: vi.fn(),
   resolveProjectScope: vi.fn(),
-  getRetrievalTopK: vi.fn(),
+  resolveRetrievalTopK: vi.fn(),
   loadTestExecutionEffortData: vi.fn(),
 }));
 
@@ -20,7 +20,7 @@ vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
 }));
 vi.mock("@/modules/rag/retrieval-config", () => ({
-  getRetrievalTopK: mocks.getRetrievalTopK,
+  resolveRetrievalTopK: mocks.resolveRetrievalTopK,
 }));
 vi.mock("@/modules/test-execution-effort/test-execution-effort.data-loader", () => ({
   loadTestExecutionEffortData: mocks.loadTestExecutionEffortData,
@@ -58,7 +58,7 @@ describe("test-execution-effort route integration errors", () => {
     mocks.requireWorkflowContext.mockResolvedValue(context);
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
     mocks.getUserAzureAdapter.mockResolvedValue(fakeAzureAdapter());
-    mocks.getRetrievalTopK.mockResolvedValue(6);
+    mocks.resolveRetrievalTopK.mockResolvedValue(6);
     mocks.loadTestExecutionEffortData.mockRejectedValue(expiredPatError());
   });
 

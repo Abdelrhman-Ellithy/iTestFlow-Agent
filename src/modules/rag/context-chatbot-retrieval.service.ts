@@ -19,6 +19,7 @@ import {
 import { searchProjectKnowledgeByTrigram } from "./trigram-search";
 import { fuseByReciprocalRank } from "./hybrid-ranking";
 import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
+import type { MetadataFilter } from "./metadata-filter";
 import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
 import { searchProjectKnowledgeByEmbedding } from "./embedding-store.service";
 
@@ -398,6 +399,8 @@ export async function retrieveContextChatbotEvidence(input: {
    * search entirely so a test never loads the ~131 MB ONNX weights.
    */
   embeddingProvider?: EmbeddingProvider | null;
+  /** Opt-in restriction by work item type / area path / iteration path. Never state. */
+  filter?: MetadataFilter;
 }): Promise<ContextChatbotEvidence> {
   const scope = assertProjectScope(input.scope);
   await ensureContextChatbotSearchIndexes({ scope });
@@ -443,6 +446,7 @@ export async function retrieveContextChatbotEvidence(input: {
     limit: contextLimit,
     maxChunksPerWorkItem: maxContextChunksPerWorkItem,
     embeddingProvider,
+    filter: input.filter,
   });
   const context = mergeContextEvidence(selected, searched, contextLimit, maxContextChunksPerWorkItem);
   return {
@@ -541,6 +545,8 @@ async function searchContext(input: {
   limit: number;
   maxChunksPerWorkItem?: number;
   embeddingProvider?: EmbeddingProvider | null;
+  /** Opt-in restriction by work item type / area path / iteration path. Never state. */
+  filter?: MetadataFilter;
 }) {
   const maxChunksPerWorkItem = positiveIntegerOrDefault(input.maxChunksPerWorkItem, input.limit);
   // searchProjectChunksHybrid never throws (every source is independently caught
@@ -554,6 +560,7 @@ async function searchContext(input: {
     topK: input.limit,
     maxChunksPerWorkItem,
     embeddingProvider: input.embeddingProvider,
+    filter: input.filter,
   });
   return fused.map(({ row }) => ({
     sourceType: "project_context" as const,

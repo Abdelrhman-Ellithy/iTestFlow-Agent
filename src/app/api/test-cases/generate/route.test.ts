@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   resolveProjectScope: vi.fn(),
   fetchWorkItemById: vi.fn(),
   resolveWorkflowContext: vi.fn(),
-  getRetrievalTopK: vi.fn(),
+  resolveRetrievalTopK: vi.fn(),
   loadProjectKnowledgeContext: vi.fn(),
   generateTestCases: vi.fn(),
   buildWorkflowContextCitations: vi.fn(),
@@ -33,7 +33,7 @@ vi.mock("@/modules/rag/auto-context-resolver.service", () => ({
   resolveWorkflowContext: mocks.resolveWorkflowContext,
 }));
 vi.mock("@/modules/rag/retrieval-config", () => ({
-  getRetrievalTopK: mocks.getRetrievalTopK,
+  resolveRetrievalTopK: mocks.resolveRetrievalTopK,
 }));
 vi.mock("@/modules/rag/project-knowledge.service", () => ({
   loadProjectKnowledgeContext: mocks.loadProjectKnowledgeContext,
@@ -89,7 +89,7 @@ describe("POST /api/test-cases/generate", () => {
     }));
     mocks.getUserLLMProvider.mockResolvedValue(provider);
     mocks.fetchWorkItemById.mockResolvedValue(requirement());
-    mocks.getRetrievalTopK.mockResolvedValue(8);
+    mocks.resolveRetrievalTopK.mockResolvedValue(8);
     mocks.resolveWorkflowContext.mockResolvedValue({
       relatedWorkItems: [],
       selectedContext: [],

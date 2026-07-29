@@ -12,6 +12,7 @@ import { buildFtsQueryWithDynamicSynonyms } from "./full-text-search";
 import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
 import { syncProjectChunkEmbeddings } from "./embedding-store.service";
 import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
+import type { MetadataFilter } from "./metadata-filter";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 import { recordProjectKnowledgeLog, regroundLegacyProjectKnowledgeCandidates } from "./project-knowledge-compiled.service";
 import { acquireProjectKnowledgeLock } from "./project-knowledge-lock";
@@ -682,6 +683,8 @@ export async function retrieveStoredProjectContext(input: {
    * loads the ~131 MB ONNX weights.
    */
   embeddingProvider?: EmbeddingProvider | null;
+  /** Opt-in restriction by work item type / area path / iteration path. Never state. */
+  filter?: MetadataFilter;
 }): Promise<LlmContextSource[]> {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
@@ -737,6 +740,7 @@ export async function retrieveStoredProjectContext(input: {
     topK,
     maxChunksPerWorkItem,
     embeddingProvider,
+    filter: input.filter,
   });
   const maxScore = fused[0]?.score ?? 0;
   return fused.map(({ row, score }) => toLlmContextSource(row, normalizeRank(score, maxScore)));
