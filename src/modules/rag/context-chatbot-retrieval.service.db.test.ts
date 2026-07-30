@@ -91,23 +91,25 @@ describeDb("context chatbot retrieval (DB-backed)", () => {
   });
 
   it("finds context and knowledge via ordinary full-text matches", async () => {
-    const evidence = await retrieveContextChatbotEvidence({ embeddingProvider: null, scope, query: "checkout customer card" });
-    expect(evidence.context.map((item) => item.workItemId)).toEqual(["701"]);
+    const evidence = await retrieveContextChatbotEvidence({ rerankProvider: null, embeddingProvider: null, scope, query: "checkout customer card" });
+    // The item has both a description and acceptance criteria, so field-aware chunking
+    // gives it two chunks; the chatbot's per-work-item cap is 2, so both surface.
+    expect(evidence.context.map((item) => item.workItemId)).toEqual(["701", "701"]);
     expect(evidence.knowledge.map((item) => item.entryKey)).toEqual(["checkout-module"]);
   });
 
   it("finds context via trigram when the query is a compound-word infix FTS prefix matching misses", async () => {
-    const evidence = await retrieveContextChatbotEvidence({ embeddingProvider: null, scope, query: "flow" });
+    const evidence = await retrieveContextChatbotEvidence({ rerankProvider: null, embeddingProvider: null, scope, query: "flow" });
     expect(evidence.context.map((item) => item.workItemId)).toContain("701");
   });
 
   it("finds knowledge via trigram when the query is a compound-word infix FTS prefix matching misses", async () => {
-    const evidence = await retrieveContextChatbotEvidence({ embeddingProvider: null, scope, query: "flow" });
+    const evidence = await retrieveContextChatbotEvidence({ rerankProvider: null, embeddingProvider: null, scope, query: "flow" });
     expect(evidence.knowledge.map((item) => item.entryKey)).toContain("checkout-module");
   });
 
   it("returns empty context and browse-order knowledge for a whitespace-only query", async () => {
-    const evidence = await retrieveContextChatbotEvidence({ embeddingProvider: null, scope, query: "   " });
+    const evidence = await retrieveContextChatbotEvidence({ rerankProvider: null, embeddingProvider: null, scope, query: "   " });
     expect(evidence.context).toEqual([]);
     expect(evidence.knowledge.map((item) => item.entryKey)).toContain("checkout-module");
   });
@@ -119,7 +121,7 @@ describeDb("context chatbot retrieval (DB-backed)", () => {
       azureProjectName: "Other project",
       azureOrganizationUrl: ORG,
     };
-    const evidence = await retrieveContextChatbotEvidence({ embeddingProvider: null, scope: otherScope, query: "checkout customer card" });
+    const evidence = await retrieveContextChatbotEvidence({ rerankProvider: null, embeddingProvider: null, scope: otherScope, query: "checkout customer card" });
     expect(evidence.context).toEqual([]);
     expect(evidence.knowledge).toEqual([]);
   });
@@ -143,6 +145,7 @@ describeDb("context chatbot retrieval (DB-backed)", () => {
     await syncProjectChunkEmbeddings({ scope, provider: recordingProvider });
 
     await retrieveContextChatbotEvidence({
+      rerankProvider: null,
       scope,
       query: "what about the rejected one ?",
       history: [{ role: "user", content: "how do PO requests move between states" }],

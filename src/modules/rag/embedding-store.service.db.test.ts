@@ -194,6 +194,7 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
 
     // Lexical-only: no chunk contains "charge" or "settlement".
     const lexicalOnly = await retrieveStoredProjectContext({
+      rerankProvider: null,
       scope,
       query: "charge settlement",
       embeddingProvider: null,
@@ -202,6 +203,7 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
 
     // Hybrid: the semantic list bridges the paraphrase and the payment item wins.
     const hybrid = await retrieveStoredProjectContext({
+      rerankProvider: null,
       scope,
       query: "charge settlement",
       embeddingProvider: provider,
@@ -211,6 +213,7 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
 
     // When both retrievers agree, fusion keeps the agreed item on top with 0..1 scores.
     const agreed = await retrieveStoredProjectContext({
+      rerankProvider: null,
       scope,
       query: "telemetry devices",
       embeddingProvider: provider,
@@ -234,6 +237,7 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
     };
 
     const sources = await retrieveStoredProjectContext({
+      rerankProvider: null,
       scope,
       query: "telemetry devices",
       embeddingProvider: failing,

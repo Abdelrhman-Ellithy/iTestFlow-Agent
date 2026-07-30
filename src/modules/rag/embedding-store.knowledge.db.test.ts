@@ -167,13 +167,15 @@ describeDb("knowledge entry embeddings (DB-backed)", () => {
 
     const rows = await allEmbeddingRows();
     expect(rows.filter((row) => row.source_type === "project_knowledge_entry")).toHaveLength(1);
-    expect(rows.filter((row) => row.source_type === "azure_work_item_chunk")).toHaveLength(1);
+    // The work item has both a description and acceptance criteria, so field-aware
+    // chunking gives it two chunks and therefore two chunk embeddings.
+    expect(rows.filter((row) => row.source_type === "azure_work_item_chunk")).toHaveLength(2);
 
-    // Re-running each pipeline's own sync must not delete the other's row.
+    // Re-running each pipeline's own sync must not delete the other's rows.
     await syncProjectKnowledgeEntryEmbeddings({ scope, provider });
     await syncProjectChunkEmbeddings({ scope, provider });
     const rowsAfter = await allEmbeddingRows();
-    expect(rowsAfter).toHaveLength(2);
+    expect(rowsAfter).toHaveLength(3);
   });
 
   it("ranks knowledge semantic search by cosine similarity and scopes to the vector reference", async () => {

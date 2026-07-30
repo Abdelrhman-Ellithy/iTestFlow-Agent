@@ -70,7 +70,7 @@ describe("retrieveContextChatbotEvidence", () => {
   it("skips FTS entirely for whitespace-only queries and serves fallback knowledge", async () => {
     db.sqlAll.mockResolvedValue([knowledgeRow]);
 
-    const result = await retrieveContextChatbotEvidence({ embeddingProvider: null, scope: projectScope(), query: "   " });
+    const result = await retrieveContextChatbotEvidence({ rerankProvider: null, embeddingProvider: null, scope: projectScope(), query: "   " });
 
     expect(result).toEqual({ context: [], knowledge: [knowledgeEvidence] });
     // Only the fallback query runs; the no-query path keeps the full knowledge limit.
@@ -92,7 +92,7 @@ describe("retrieveContextChatbotEvidence", () => {
       return [knowledgeRow];
     });
 
-    const result = await retrieveContextChatbotEvidence({ embeddingProvider: null, scope: projectScope(), query: "login flow" });
+    const result = await retrieveContextChatbotEvidence({ rerankProvider: null, embeddingProvider: null, scope: projectScope(), query: "login flow" });
 
     expect(result).toEqual({ context: [], knowledge: [knowledgeEvidence] });
 
@@ -117,6 +117,7 @@ describe("retrieveContextChatbotEvidence", () => {
     );
 
     const result = await retrieveContextChatbotEvidence({
+      rerankProvider: null,
       embeddingProvider: null,
       scope: projectScope(),
       query: "login flow",
@@ -148,7 +149,7 @@ describe("retrieveContextChatbotEvidence", () => {
       return [{ ...knowledgeRow, entry_key: "unexpected-fallback" }];
     });
 
-    const result = await retrieveContextChatbotEvidence({ embeddingProvider: null, scope: projectScope(), query: "login" });
+    const result = await retrieveContextChatbotEvidence({ rerankProvider: null, embeddingProvider: null, scope: projectScope(), query: "login" });
 
     expect(result.context).toEqual([
       {
@@ -195,6 +196,7 @@ describe("retrieveContextChatbotEvidence", () => {
     });
 
     const result = await retrieveContextChatbotEvidence({
+      rerankProvider: null,
       embeddingProvider: null,
       scope: projectScope(),
       query: "checkout policy",

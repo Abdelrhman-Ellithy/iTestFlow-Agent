@@ -9,13 +9,16 @@ import { rerankWithLocalModel, type LocalRerankDtype } from "./local-rerank";
  * well under the embedding model's ~131 MB) into data/model-cache on first use -- the
  * same zero-config local-model pattern embedding-provider.ts uses.
  *
- * Unlike the embedding model, reranking is not load-bearing for anything persisted (no
- * vectors are stored from it, it only reorders a candidate list at query time), so
- * unlike embeddings it is safe to make this the one configurable RAG backend:
- * RERANK_PROVIDER=off disables it deployment-wide for an operator who wants to skip the
- * extra inference cost or cannot download the weights. Every caller treats a null
- * provider -- and a rerank failure -- identically to "skip reranking, keep the fused
- * order", so disabling it degrades precision but never breaks retrieval.
+ * Like the embedding model, this is deliberately not pluggable and not configurable.
+ * Retrieval quality is a property of the product, not a deployment choice: an operator
+ * who turns reranking off silently gets worse answers with nothing in the product saying
+ * so, and a second reranker model would mean two deployments disagreeing about what
+ * "relevant" means for the same corpus. One pinned model keeps behaviour identical
+ * everywhere.
+ *
+ * Callers still handle a failed rerank: hybrid search catches rerank errors and keeps
+ * the pre-rerank fused order, so a machine that cannot download the weights (offline,
+ * air-gapped) loses precision but keeps working.
  */
 
 export type RerankProvider = {
@@ -42,14 +45,10 @@ export const MAX_RERANK_BATCH_SIZE = 16;
 const MAX_RERANK_INPUT_CHARS = 2000;
 
 /**
- * Resolves the deployment-configured rerank backend. Returns null when explicitly
- * disabled via RERANK_PROVIDER=off; every other value (including unset) resolves to
- * the local cross-encoder, matching this product's "on by default, opt out" stance for
- * local-model features.
+ * The rerank provider. Always available — there is no "off" and no null return;
+ * callers that need to disable reranking (tests) inject null at the seam instead.
  */
-export function createRerankProvider(): RerankProvider | null {
-  const mode = (process.env.RERANK_PROVIDER ?? "local").trim().toLowerCase();
-  if (mode === "off") return null;
+export function createRerankProvider(): RerankProvider {
   return {
     name: "local",
     model: RERANK_MODEL,

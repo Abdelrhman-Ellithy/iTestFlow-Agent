@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const local = vi.hoisted(() => ({ rerankWithLocalModel: vi.fn() }));
 vi.mock("./local-rerank", () => local);
@@ -6,10 +6,9 @@ vi.mock("./local-rerank", () => local);
 import { createRerankProvider, MAX_RERANK_BATCH_SIZE, RERANK_DTYPE, RERANK_MODEL } from "./rerank-provider";
 
 /**
- * Unit coverage for the provider's own logic — env resolution, batching, truncation
- * and validation — with the ONNX model mocked out. Real cross-encoder inference is
- * proven separately (see the module doc comment on local-rerank.ts): this file never
- * loads the ~23 MB weights.
+ * Unit coverage for the provider's own logic — batching, truncation and validation —
+ * with the ONNX model mocked out. Real cross-encoder inference is proven separately
+ * (see rerank-retrieval.quality.db.test.ts): this file never loads the ~23 MB weights.
  */
 
 /** Returns one score per input so the count assertion passes by default. */
@@ -22,42 +21,18 @@ function respondWithOneScorePerInput() {
 beforeEach(() => {
   vi.clearAllMocks();
   respondWithOneScorePerInput();
-  delete process.env.RERANK_PROVIDER;
-});
-
-afterEach(() => {
-  delete process.env.RERANK_PROVIDER;
 });
 
 describe("createRerankProvider", () => {
-  it("defaults to the local cross-encoder when unset", () => {
+  it("pins one local cross-encoder, with nothing for a deployment to change", () => {
     const provider = createRerankProvider();
 
-    expect(provider).not.toBeNull();
-    expect(provider!.name).toBe("local");
-    expect(provider!.model).toBe(RERANK_MODEL);
-  });
-
-  it("returns null when explicitly disabled via RERANK_PROVIDER=off", () => {
-    process.env.RERANK_PROVIDER = "off";
-
-    expect(createRerankProvider()).toBeNull();
-  });
-
-  it("treats the off switch case-insensitively and trims whitespace", () => {
-    process.env.RERANK_PROVIDER = "  Off  ";
-
-    expect(createRerankProvider()).toBeNull();
-  });
-
-  it("resolves to local for any other configured value", () => {
-    process.env.RERANK_PROVIDER = "local";
-
-    expect(createRerankProvider()).not.toBeNull();
+    expect(provider.name).toBe("local");
+    expect(provider.model).toBe(RERANK_MODEL);
   });
 
   it("passes the pinned model and dtype through to the runtime", async () => {
-    await createRerankProvider()!.rerank("query", ["alpha"]);
+    await createRerankProvider().rerank("query", ["alpha"]);
 
     expect(local.rerankWithLocalModel).toHaveBeenCalledWith(
       expect.objectContaining({ model: RERANK_MODEL, dtype: RERANK_DTYPE, query: "query", texts: ["alpha"] }),
@@ -65,7 +40,7 @@ describe("createRerankProvider", () => {
   });
 
   it("scores align 1:1 with the input texts, in order", async () => {
-    const scores = await createRerankProvider()!.rerank("query", ["a", "b", "c"]);
+    const scores = await createRerankProvider().rerank("query", ["a", "b", "c"]);
 
     expect(scores).toEqual([0, 0.1, 0.2]);
   });
@@ -76,7 +51,7 @@ describe("createRerankProvider", () => {
       texts.map((text) => Number(text.replace("item", ""))),
     );
 
-    const scores = await createRerankProvider()!.rerank(
+    const scores = await createRerankProvider().rerank(
       "query",
       Array.from({ length: inputCount }, (_, index) => `item${index}`),
     );
@@ -92,7 +67,7 @@ describe("createRerankProvider", () => {
 
   it("reuses the same query text across every batch of a multi-batch call", async () => {
     const inputCount = MAX_RERANK_BATCH_SIZE + 1;
-    await createRerankProvider()!.rerank(
+    await createRerankProvider().rerank(
       "checkout payment failure",
       Array.from({ length: inputCount }, (_, index) => `item${index}`),
     );
@@ -104,7 +79,7 @@ describe("createRerankProvider", () => {
   });
 
   it("truncates oversized text and query input", async () => {
-    await createRerankProvider()!.rerank("q".repeat(5000), ["p".repeat(5000)]);
+    await createRerankProvider().rerank("q".repeat(5000), ["p".repeat(5000)]);
 
     const call = local.rerankWithLocalModel.mock.calls[0]![0];
     expect(call.query).toHaveLength(2000);
@@ -112,7 +87,7 @@ describe("createRerankProvider", () => {
   });
 
   it("returns an empty result without invoking the model", async () => {
-    await expect(createRerankProvider()!.rerank("query", [])).resolves.toEqual([]);
+    await expect(createRerankProvider().rerank("query", [])).resolves.toEqual([]);
     expect(local.rerankWithLocalModel).not.toHaveBeenCalled();
   });
 
@@ -121,7 +96,7 @@ describe("createRerankProvider", () => {
     // score to a candidate, corrupting the sort in hybrid-chunk-search.ts.
     local.rerankWithLocalModel.mockResolvedValue([0.5]);
 
-    await expect(createRerankProvider()!.rerank("query", ["alpha", "beta"])).rejects.toThrow(
+    await expect(createRerankProvider().rerank("query", ["alpha", "beta"])).rejects.toThrow(
       "returned 1 scores for 2 inputs",
     );
   });
@@ -129,6 +104,6 @@ describe("createRerankProvider", () => {
   it("propagates a model failure so callers can degrade to the pre-rerank order", async () => {
     local.rerankWithLocalModel.mockRejectedValue(new Error("model download failed"));
 
-    await expect(createRerankProvider()!.rerank("query", ["alpha"])).rejects.toThrow("model download failed");
+    await expect(createRerankProvider().rerank("query", ["alpha"])).rejects.toThrow("model download failed");
   });
 });

@@ -21,6 +21,7 @@ import { fuseByReciprocalRank } from "./hybrid-ranking";
 import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
 import type { MetadataFilter } from "./metadata-filter";
 import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
+import type { RerankProvider } from "./rerank-provider";
 import { searchProjectKnowledgeByEmbedding } from "./embedding-store.service";
 
 export type ContextChatbotContextEvidence = {
@@ -451,6 +452,7 @@ export async function retrieveContextChatbotEvidence(input: {
     limit: contextLimit,
     maxChunksPerWorkItem: maxContextChunksPerWorkItem,
     embeddingProvider,
+    rerankProvider: input.rerankProvider,
     filter: input.filter,
   });
   const context = mergeContextEvidence(selected, searched, contextLimit, maxContextChunksPerWorkItem);
@@ -550,6 +552,7 @@ async function searchContext(input: {
   limit: number;
   maxChunksPerWorkItem?: number;
   embeddingProvider?: EmbeddingProvider | null;
+  rerankProvider?: RerankProvider | null;
   /** Opt-in restriction by work item type / area path / iteration path. Never state. */
   filter?: MetadataFilter;
 }) {
@@ -565,6 +568,7 @@ async function searchContext(input: {
     topK: input.limit,
     maxChunksPerWorkItem,
     embeddingProvider: input.embeddingProvider,
+    rerankProvider: input.rerankProvider,
     filter: input.filter,
   });
   return fused.map(({ row }) => ({

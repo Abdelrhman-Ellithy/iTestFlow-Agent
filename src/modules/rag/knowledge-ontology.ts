@@ -1,4 +1,4 @@
-import { buildAliasIndex, entityAliasKey, resolveAlias, type AliasIndex } from "./entity-aliases";
+import { buildAliasIndex, entityAliasKey, resolveAlias } from "./entity-aliases";
 import type { ProjectKnowledgeBase } from "./project-knowledge.schema";
 
 /**

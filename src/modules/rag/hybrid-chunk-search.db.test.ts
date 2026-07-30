@@ -6,6 +6,7 @@ import { syncProjectChunkEmbeddings } from "@/modules/rag/embedding-store.servic
 import { searchProjectChunksHybrid } from "@/modules/rag/hybrid-chunk-search";
 import { buildFtsQuery } from "@/modules/rag/full-text-search";
 import type { EmbeddingProvider } from "@/modules/rag/embedding-provider";
+import type { RerankProvider } from "@/modules/rag/rerank-provider";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
 import { fakeAzureAdapter, requirement } from "@/test/factories";
@@ -79,6 +80,7 @@ describeDb("hybrid chunk search (DB-backed)", () => {
 
   it("keeps raw FTS rank ordering when neither semantic nor trigram contribute (embeddings unavailable)", async () => {
     const results = await searchProjectChunksHybrid({
+      rerankProvider: null,
       scope,
       ftsQuery: buildFtsQuery("checkout payment"),
       rawQuery: "checkout payment",
@@ -100,6 +102,7 @@ describeDb("hybrid chunk search (DB-backed)", () => {
     await syncProjectChunkEmbeddings({ scope, provider });
 
     const results = await searchProjectChunksHybrid({
+      rerankProvider: null,
       scope,
       ftsQuery: buildFtsQuery("flow"),
       rawQuery: "flow",
@@ -119,6 +122,7 @@ describeDb("hybrid chunk search (DB-backed)", () => {
     });
 
     const results = await searchProjectChunksHybrid({
+      rerankProvider: null,
       scope,
       ftsQuery: buildFtsQuery("checkout payment"),
       rawQuery: "checkout payment",
@@ -136,6 +140,7 @@ describeDb("hybrid chunk search (DB-backed)", () => {
     await syncProjectChunkEmbeddings({ scope, provider });
 
     const results = await searchProjectChunksHybrid({
+      rerankProvider: null,
       scope,
       ftsQuery: buildFtsQuery("checkout payment"),
       rawQuery: "checkout payment",
@@ -150,5 +155,92 @@ describeDb("hybrid chunk search (DB-backed)", () => {
       countsByWorkItem.set(key, (countsByWorkItem.get(key) ?? 0) + 1);
     }
     expect([...countsByWorkItem.values()].every((count) => count <= 1)).toBe(true);
+  });
+
+  it("keeps FTS-only ordering unchanged when rerankProvider is explicitly disabled", async () => {
+    // Same fixture and assertions as "keeps raw FTS rank ordering..." above: adding
+    // the rerankProvider seam must not change a single byte of behavior when the
+    // provider is off, exactly like every other optional signal in this file.
+    const results = await searchProjectChunksHybrid({
+      scope,
+      ftsQuery: buildFtsQuery("checkout payment"),
+      rawQuery: "checkout payment",
+      topK: 5,
+      embeddingProvider: null,
+      rerankProvider: null,
+    });
+    expect(results.map(({ row }) => row.azure_work_item_id)).toEqual(["601"]);
+    expect(results[0]!.score).toBeGreaterThan(0);
+  });
+
+  it("respects the caller's real topK, not the internal wide rerank pool, when rerankProvider is disabled", async () => {
+    // Regression guard for the wide-then-narrow cap: reranking calls
+    // applyPerWorkItemCap with a widened topK to build its candidate pool, but a
+    // disabled provider must still return only the caller's originally requested
+    // topK, not that wider internal size.
+    const results = await searchProjectChunksHybrid({
+      scope,
+      ftsQuery: buildFtsQuery("checkout payment"),
+      rawQuery: "checkout payment",
+      topK: 1,
+      embeddingProvider: null,
+      rerankProvider: null,
+    });
+    expect(results.length).toBeLessThanOrEqual(1);
+  });
+
+  it("reorders results by rerank score, overriding the fused order", async () => {
+    // Every chunk embeds identically, so semantic search alone contributes both
+    // work items as equally-similar candidates (601 also via FTS/trigram on
+    // "checkout"). Fused order therefore favors 601. A stub reranker that scores
+    // the refund passage highest must still win -- proving the pipeline sorts by
+    // rerank score rather than just calling the provider and discarding the result.
+    const provider = fakeEmbeddingProvider(async (texts) => texts.map(() => [1, 0]));
+    await syncProjectChunkEmbeddings({ scope, provider });
+
+    const rerankProvider: RerankProvider = {
+      name: "local",
+      model: "fake-reranker",
+      rerank: async (_query, texts) => texts.map((text) => (text.toLowerCase().includes("refund") ? 1 : 0)),
+    };
+
+    const results = await searchProjectChunksHybrid({
+      scope,
+      ftsQuery: buildFtsQuery("checkout payment"),
+      rawQuery: "checkout payment",
+      topK: 5,
+      maxChunksPerWorkItem: 1,
+      embeddingProvider: provider,
+      rerankProvider,
+    });
+
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0]!.row.azure_work_item_id).toBe("602");
+  });
+
+  it("falls through to the pre-rerank order when the rerank provider throws", async () => {
+    // Same resilience contract as the semantic-source-throws test above: a broken
+    // rerank call must not lose results, only skip the reordering step.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failingRerankProvider: RerankProvider = {
+      name: "local",
+      model: "fake-reranker",
+      rerank: async () => {
+        throw new Error("rerank backend unreachable");
+      },
+    };
+
+    const results = await searchProjectChunksHybrid({
+      scope,
+      ftsQuery: buildFtsQuery("checkout payment"),
+      rawQuery: "checkout payment",
+      topK: 5,
+      embeddingProvider: null,
+      rerankProvider: failingRerankProvider,
+    });
+
+    expect(results.map(({ row }) => row.azure_work_item_id)).toEqual(["601"]);
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 });
