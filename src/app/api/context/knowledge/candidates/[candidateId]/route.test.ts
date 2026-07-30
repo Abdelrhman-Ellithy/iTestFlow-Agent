@@ -21,7 +21,7 @@ vi.mock("@/modules/projects/workspace-projects.service", () => ({
 }));
 vi.mock("@/modules/rag/project-knowledge-compiled.service", () => ({
   rejectProjectKnowledgeCandidate: mocks.rejectCandidate,
-  requestProjectKnowledgeCandidateIntegration: mocks.requestIntegration,
+  integrateProjectKnowledgeCandidate: mocks.requestIntegration,
 }));
 
 import { WorkflowAuthError } from "@/modules/credentials/scoped-resolution.service";

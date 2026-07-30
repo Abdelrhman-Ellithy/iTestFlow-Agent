@@ -4,7 +4,7 @@ import type { PoolClient } from "pg";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
-import { createId, enqueueBackgroundWrite, nowIso, sqlAll, sqlGet, sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { createId, enqueueBackgroundWrite, nowIso, sqlAll, sqlGet, sqlRun, withTransaction } from "@/modules/shared/infrastructure/database/db";
 import {
   PROJECT_KNOWLEDGE_BUSINESS_RULE_SOURCE_FIELDS,
   renderProjectKnowledgeEvidenceRefs,
@@ -21,6 +21,9 @@ import {
   type ProjectKnowledgeSourceManifestEntry,
 } from "./project-knowledge-contracts";
 import { listProjectKnowledgeBenchmarkCases } from "./project-knowledge-benchmark.service";
+import { indexApprovedChatInsight } from "./context-chatbot-retrieval.service";
+import { createEmbeddingProvider } from "./embedding-provider";
+import { syncProjectKnowledgeEntryEmbeddings } from "./embedding-store.service";
 import { addNameSimilarityIssues } from "./project-knowledge-lint-similarity";
 import { matchLegacyEvidenceFragmentUniquely } from "./project-knowledge-migration.service";
 
@@ -34,7 +37,11 @@ export const PROJECT_KNOWLEDGE_CANDIDATE_STATUSES = [
   "legacy_ungrounded",
   "grounded",
   "rejected",
+  // Retained so rows written before integration was implemented still parse. Nothing
+  // sets it any more: integrating now indexes the entry rather than only recording a
+  // request that nothing fulfilled.
   "integration_requested",
+  "integrated",
 ] as const;
 export type ProjectKnowledgeCandidateStatus = (typeof PROJECT_KNOWLEDGE_CANDIDATE_STATUSES)[number];
 
@@ -1190,38 +1197,87 @@ export async function rejectProjectKnowledgeCandidate(input: {
   return getProjectKnowledgeCandidate({ scope, candidateId: input.candidateId });
 }
 
-export async function requestProjectKnowledgeCandidateIntegration(input: {
+/**
+ * Integrates an approved candidate into the project's searchable knowledge, so a saved
+ * chatbot answer can inform later answers and workflow prompts instead of only sitting
+ * in a list.
+ *
+ * Accepts an ungrounded candidate deliberately. Grounding means every fragment
+ * re-anchors uniquely to an immutable snapshot quote, and a chatbot answer is a
+ * synthesis across several work items rather than a quote from any one of them — so a
+ * promoted answer is stored ungrounded and can never become grounded. Requiring
+ * grounding here made the action unreachable for the only content that ever reaches it.
+ *
+ * The provenance distinction is kept where it belongs instead: the resulting entry is
+ * recorded as human-approved rather than verified, so nothing downstream mistakes an
+ * accepted synthesis for extracted-and-verified fact.
+ */
+export async function integrateProjectKnowledgeCandidate(input: {
   scope: ProjectScope;
   candidateId: string;
   actor: string;
 }) {
   const scope = assertProjectScope(input.scope);
-  const now = nowIso();
-  const updated = await sqlRun(
-    `
-      UPDATE project_knowledge_candidates
-      SET status = 'integration_requested', integration_requested_by = @actor,
-          integration_requested_at = @now, updated_at = @now
-      WHERE id = @candidateId AND project_id = @projectId AND azure_project_id = @azureProjectId
-        AND status = 'grounded'
-    `,
-    {
-      candidateId: input.candidateId,
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      actor: input.actor,
-      now,
-    },
-  );
-  if (!updated) {
-    const existing = await getProjectKnowledgeCandidate({ scope, candidateId: input.candidateId });
-    if (!existing) throw resourceNotFound("Project knowledge candidate");
+  const candidate = await getProjectKnowledgeCandidate({ scope, candidateId: input.candidateId });
+  if (!candidate) throw resourceNotFound("Project knowledge candidate");
+  if (candidate.status === "rejected") {
     throw new AppError({
       code: AppErrorCode.KnowledgeDraftConflict,
-      message: "The candidate must be grounded before integration can be requested.",
-      userMessage: "Only a grounded candidate can request integration.",
+      message: "A rejected candidate cannot be integrated.",
+      userMessage: "This candidate was rejected. Reopen it before integrating.",
     });
   }
+
+  const now = nowIso();
+  // Status and index move together: an entry indexed without the status recorded would
+  // be re-indexed on every retry, and a status recorded without the entry would claim
+  // the knowledge is in use when retrieval cannot see it.
+  await withTransaction(async (client) => {
+    await sqlRun(
+      `
+        UPDATE project_knowledge_candidates
+        SET status = 'integrated', integration_requested_by = @actor,
+            integration_requested_at = @now, updated_at = @now
+        WHERE id = @candidateId AND project_id = @projectId AND azure_project_id = @azureProjectId
+      `,
+      {
+        candidateId: input.candidateId,
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        actor: input.actor,
+        now,
+      },
+      client,
+    );
+    await indexApprovedChatInsight(
+      {
+        scope,
+        candidateId: input.candidateId,
+        // Same derivation promoteContextChatbotAnswer uses for its own entryKey, so two
+        // saves of one answer resolve to a single indexed insight.
+        entryKey: `chat-insight-${stableHash(candidate.content).slice(0, 12)}`,
+        title: candidate.title,
+        content: candidate.content,
+        sourceWorkItemIds: candidate.sourceWorkItemIds.filter(
+          (value): value is string => typeof value === "string",
+        ),
+        evidence: `Approved from a Business Owner Assistant answer by ${input.actor}.`,
+      },
+      client,
+    );
+  });
+
+  // Lexical search sees the entry the moment it is committed; semantic search needs a
+  // vector, and the knowledge embedding sync otherwise only runs when a draft is
+  // published. Outside the transaction because it performs model inference, and
+  // best-effort because an insight that is findable lexically is still useful — the
+  // next publish embeds it regardless.
+  try {
+    await syncProjectKnowledgeEntryEmbeddings({ scope, provider: createEmbeddingProvider() });
+  } catch (error) {
+    console.error("Approved chat insight indexed, but embedding it for semantic search failed.", error);
+  }
+
   return getProjectKnowledgeCandidate({ scope, candidateId: input.candidateId });
 }
 

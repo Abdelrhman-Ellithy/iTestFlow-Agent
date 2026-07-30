@@ -10,7 +10,7 @@ import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import {
   rejectProjectKnowledgeCandidate,
-  requestProjectKnowledgeCandidateIntegration,
+  integrateProjectKnowledgeCandidate,
 } from "@/modules/rag/project-knowledge-compiled.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
@@ -40,7 +40,7 @@ export async function PATCH(request: Request, { params }: RouteParams) {
           actor: ctx.userId,
           reason: parsed.data.reason!,
         })
-      : await requestProjectKnowledgeCandidateIntegration({ scope, candidateId, actor: ctx.userId });
+      : await integrateProjectKnowledgeCandidate({ scope, candidateId, actor: ctx.userId });
     return NextResponse.json({ candidate });
   } catch (error) {
     const authResponse = authErrorResponse(error);

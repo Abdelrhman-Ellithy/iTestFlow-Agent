@@ -166,6 +166,138 @@ export async function refreshProjectContextSearchIndex(
   }
 }
 
+/**
+ * Category for knowledge an admin approved from a chatbot answer, as opposed to
+ * knowledge the compiler extracted from work items.
+ *
+ * Kept as its own category for two reasons. It must survive a knowledge republish,
+ * which wipes and rebuilds every compiled entry — an approved insight is not derived
+ * from the compiled base and would otherwise vanish the next time anyone publishes a
+ * draft. And it must stay distinguishable in citations: a compiled entry is
+ * re-anchorable to immutable snapshot quotes, while this is a model synthesis a human
+ * accepted. Both are useful; conflating them would quietly weaken what "verified"
+ * means everywhere it is asserted.
+ */
+export const CHAT_INSIGHT_CATEGORY = "chat_insight";
+
+/**
+ * Makes an approved chatbot answer searchable, by writing it into the same two tables
+ * compiled knowledge lives in. Every knowledge retrieval signal — full text, trigram,
+ * and (once embeddings sync) semantic — then finds it with no additional plumbing,
+ * because they all read these tables.
+ *
+ * Idempotent per candidate: re-approving replaces the entry rather than adding a second
+ * copy.
+ */
+export async function indexApprovedChatInsight(
+  input: {
+    scope: ProjectScope;
+    candidateId: string;
+    /**
+     * Identity of the insight itself, derived from its content by the caller. Keyed on
+     * content rather than on the candidate so the same answer approved twice — from two
+     * separate saves — collapses to one entry instead of stacking duplicates in every
+     * later prompt.
+     */
+    entryKey: string;
+    title: string;
+    content: string;
+    sourceWorkItemIds: string[];
+    evidence: string;
+  },
+  client?: PoolClient,
+) {
+  const scope = assertProjectScope(input.scope);
+  await ensureProjectContextSyncSchema();
+  const now = nowIso();
+  const entryKey = input.entryKey;
+  const sourceWorkItemIds = input.sourceWorkItemIds.join(", ");
+  const metadataJson = JSON.stringify({ candidateId: input.candidateId, origin: "chatbot_answer" });
+
+  for (const table of ["project_knowledge_entries_fts", "project_knowledge_entries"] as const) {
+    await sqlRun(
+      `
+        DELETE FROM ${table}
+        WHERE project_id = @projectId
+          AND azure_project_id = @azureProjectId
+          AND category = @category
+          AND entry_key = @entryKey
+      `,
+      {
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        category: CHAT_INSIGHT_CATEGORY,
+        entryKey,
+      },
+      client,
+    );
+  }
+
+  const id = createId("pke");
+  await sqlRun(
+    `
+      INSERT INTO project_knowledge_entries (
+        id, project_id, azure_project_id, azure_project_name, azure_organization_url,
+        knowledge_base_id, category, entry_key, title, content, source_work_item_ids,
+        evidence, metadata_json, created_at, updated_at, provenance_status
+      ) VALUES (
+        @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
+        @knowledgeBaseId, @category, @entryKey, @title, @content, @sourceWorkItemIds,
+        @evidence, @metadataJson, @createdAt, @updatedAt, @provenanceStatus
+      )
+    `,
+    {
+      id,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      azureProjectName: scope.azureProjectName,
+      azureOrganizationUrl: scope.azureOrganizationUrl,
+      // Traceable back to the candidate it came from rather than to a compiled base,
+      // because it did not come from one.
+      knowledgeBaseId: input.candidateId,
+      category: CHAT_INSIGHT_CATEGORY,
+      entryKey,
+      title: input.title,
+      content: input.content,
+      sourceWorkItemIds,
+      evidence: input.evidence,
+      metadataJson,
+      createdAt: now,
+      updatedAt: now,
+      // Never "verified": a synthesis across several work items is not a quote from any
+      // one of them, which is exactly why the candidate was held ungrounded.
+      provenanceStatus: "human_approved",
+    },
+    client,
+  );
+
+  await sqlRun(
+    `
+      INSERT INTO project_knowledge_entries_fts (
+        project_id, azure_project_id, entry_id, category, entry_key, title,
+        content, source_work_item_ids, evidence, metadata_json
+      ) VALUES (
+        @projectId, @azureProjectId, @entryId, @category, @entryKey, @title,
+        @content, @sourceWorkItemIds, @evidence, @metadataJson
+      )
+    `,
+    {
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      entryId: id,
+      category: CHAT_INSIGHT_CATEGORY,
+      entryKey,
+      title: input.title,
+      content: input.content,
+      sourceWorkItemIds,
+      evidence: input.evidence,
+      metadataJson,
+    },
+    client,
+  );
+  return { entryId: id };
+}
+
 export async function refreshProjectKnowledgeSearchIndex(
   input: {
     scope: ProjectScope;
@@ -201,15 +333,20 @@ export async function refreshProjectKnowledgeSearchIndex(
     ]),
   );
 
+  // Compiled entries are rebuilt wholesale from the base, but admin-approved chat
+  // insights are not in that base and must survive the rebuild — without this guard,
+  // publishing any knowledge draft silently discards every approved insight.
   await sqlRun(
     `
     DELETE FROM project_knowledge_entries_fts
     WHERE project_id = @projectId
       AND azure_project_id = @azureProjectId
+      AND category <> @chatInsightCategory
   `,
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
+      chatInsightCategory: CHAT_INSIGHT_CATEGORY,
     },
     client,
   );
@@ -219,10 +356,12 @@ export async function refreshProjectKnowledgeSearchIndex(
     DELETE FROM project_knowledge_entries
     WHERE project_id = @projectId
       AND azure_project_id = @azureProjectId
+      AND category <> @chatInsightCategory
   `,
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
+      chatInsightCategory: CHAT_INSIGHT_CATEGORY,
     },
     client,
   );

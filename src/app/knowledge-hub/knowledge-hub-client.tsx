@@ -244,7 +244,7 @@ type KnowledgeExportResult = {
 type TopTab = "hub" | "build"
 type WorkspaceRole = "owner" | "admin" | "member"
 type HubView = "explorer" | "context" | "candidates"
-type KnowledgeCandidateStatus = "legacy_ungrounded" | "grounded" | "rejected" | "integration_requested"
+type KnowledgeCandidateStatus = "legacy_ungrounded" | "grounded" | "rejected" | "integration_requested" | "integrated"
 
 type KnowledgeCandidate = {
   id: string
@@ -1478,7 +1478,7 @@ export function KnowledgeCandidatesView({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="text-sm font-semibold text-foreground">Knowledge Candidates</div>
-          <div className="text-xs text-muted-foreground">Candidate answers remain non-authoritative until integrated through a reviewed draft.</div>
+          <div className="text-xs text-muted-foreground">Integrating a candidate makes it searchable by the assistant and the workflow prompts, recorded as human-approved rather than extracted-and-verified.</div>
         </div>
         <Label className="space-y-1 text-xs sm:w-56">
           <span>Status</span>
@@ -1490,7 +1490,8 @@ export function KnowledgeCandidatesView({
             <option value="all">All statuses</option>
             <option value="legacy_ungrounded">Legacy ungrounded</option>
             <option value="grounded">Grounded</option>
-            <option value="integration_requested">Integration requested</option>
+            <option value="integrated">Integrated</option>
+            <option value="integration_requested">Integration requested (legacy)</option>
             <option value="rejected">Rejected</option>
           </select>
         </Label>
@@ -1510,12 +1511,10 @@ export function KnowledgeCandidatesView({
             </details>
           ) : null}
           {candidate.rejectedReason ? <div className="mt-2 text-xs text-destructive">Rejected: {candidate.rejectedReason}</div> : null}
-          {canManage && !["rejected", "integration_requested"].includes(candidate.status) ? (
+          {canManage && !["rejected", "integration_requested", "integrated"].includes(candidate.status) ? (
             <div className="mt-3 flex justify-end gap-2">
               <Button size="sm" variant="outline" disabled={loading} onClick={() => void onAction(candidate.id, "reject")}>Reject</Button>
-              {candidate.status === "grounded" ? (
-                <Button size="sm" disabled={loading} onClick={() => void onAction(candidate.id, "request_integration")}>Request Integration</Button>
-              ) : null}
+              <Button size="sm" disabled={loading} onClick={() => void onAction(candidate.id, "request_integration")}>Integrate</Button>
             </div>
           ) : null}
         </div>
