@@ -198,7 +198,14 @@ export async function syncProjectChunkEmbeddings(input: {
        AND e.vector_reference = @vectorReference
       WHERE ${ACTIVE_CHUNK_FILTER_SQL}
         AND (e.id IS NULL OR e.vector IS NULL OR e.updated_at < dc.updated_at)
-      ORDER BY dc.id
+      -- Length first so each persisted batch below holds similar-length chunks: the
+      -- provider batches for inference within what it is handed, and a batch pads
+      -- every sequence to its longest member. Ordering by id instead interleaves
+      -- 200- and 2,000-character chunks and pays the long shape for all of them.
+      -- length(content) is a proxy for the embedded projection (embeddableChunkText
+      -- strips header lines and prefixes the title) but tracks it closely enough, and
+      -- costs nothing here. id breaks ties so batching stays deterministic.
+      ORDER BY length(dc.content), dc.id
     `,
     {
       projectId: scope.projectId,
@@ -216,39 +223,42 @@ export async function syncProjectChunkEmbeddings(input: {
     const batch = pending.slice(start, start + MAX_EMBED_BATCH_SIZE);
     const vectors = await input.provider.embed(batch.map(embeddableChunkText), "document");
     const now = nowIso();
-    for (const [index, chunk] of batch.entries()) {
-      await sqlRun(
-        `
-          INSERT INTO embeddings (
-            id, project_id, azure_project_id, chunk_id, source_type, provider, model,
-            vector_reference, vector, created_at, updated_at
-          ) VALUES (
-            @id, @projectId, @azureProjectId, @chunkId, @sourceType, @provider, @model,
-            @vectorReference, @vector::real[], @createdAt, @updatedAt
-          )
-          ON CONFLICT (source_type, chunk_id) DO UPDATE SET
-            provider = excluded.provider,
-            model = excluded.model,
-            vector_reference = excluded.vector_reference,
-            vector = excluded.vector,
-            updated_at = excluded.updated_at
-        `,
-        {
-          id: createId("emb"),
-          projectId: scope.projectId,
-          azureProjectId: scope.azureProjectId,
-          chunkId: chunk.id,
-          sourceType: CHUNK_SOURCE_TYPE,
-          provider: input.provider.name,
-          model: input.provider.model,
-          vectorReference: chunkVectorReference(input.provider),
-          vector: vectors[index],
-          createdAt: now,
-          updatedAt: now,
-        },
-      );
-      embeddedChunkCount += 1;
-    }
+    // One statement per batch rather than one per chunk: a full re-embed of this
+    // project's 1,155 chunks spent ~22s of its ~167s outside inference, most of it
+    // round trips. Row order still pairs vectors[index] with batch[index].
+    const params: Record<string, unknown> = {
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      sourceType: CHUNK_SOURCE_TYPE,
+      provider: input.provider.name,
+      model: input.provider.model,
+      vectorReference: chunkVectorReference(input.provider),
+      createdAt: now,
+      updatedAt: now,
+    };
+    const rows = batch.map((chunk, index) => {
+      params[`id${index}`] = createId("emb");
+      params[`chunkId${index}`] = chunk.id;
+      params[`vector${index}`] = vectors[index];
+      return `(@id${index}, @projectId, @azureProjectId, @chunkId${index}, @sourceType,`
+        + ` @provider, @model, @vectorReference, @vector${index}::real[], @createdAt, @updatedAt)`;
+    });
+    await sqlRun(
+      `
+        INSERT INTO embeddings (
+          id, project_id, azure_project_id, chunk_id, source_type, provider, model,
+          vector_reference, vector, created_at, updated_at
+        ) VALUES ${rows.join(", ")}
+        ON CONFLICT (source_type, chunk_id) DO UPDATE SET
+          provider = excluded.provider,
+          model = excluded.model,
+          vector_reference = excluded.vector_reference,
+          vector = excluded.vector,
+          updated_at = excluded.updated_at
+      `,
+      params,
+    );
+    embeddedChunkCount += batch.length;
   }
 
   return {

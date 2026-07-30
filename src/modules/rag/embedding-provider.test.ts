@@ -8,7 +8,7 @@ import {
   EMBEDDING_DTYPE,
   EMBEDDING_MODEL,
   EMBEDDING_VECTOR_REFERENCE,
-  MAX_EMBED_BATCH_SIZE,
+  EMBED_INFERENCE_BATCH_SIZE,
 } from "./embedding-provider";
 
 /**
@@ -62,22 +62,62 @@ describe("createEmbeddingProvider", () => {
   });
 
   it("splits large inputs into bounded batches and preserves overall order", async () => {
-    const inputCount = MAX_EMBED_BATCH_SIZE * 2 + 5;
+    const inputCount = EMBED_INFERENCE_BATCH_SIZE * 2 + 5;
     local.embedWithLocalModel.mockImplementation(async ({ texts }: { texts: string[] }) =>
       texts.map((text) => [Number(text.replace("search_document: item", ""))]),
     );
 
+    // Uniform-length ids so this case exercises batching alone; length-driven
+    // reordering is covered separately below.
     const vectors = await createEmbeddingProvider().embed(
-      Array.from({ length: inputCount }, (_, index) => `item${index}`),
+      Array.from({ length: inputCount }, (_, index) => `item${String(index).padStart(4, "0")}`),
     );
 
     expect(vectors).toHaveLength(inputCount);
     expect(local.embedWithLocalModel).toHaveBeenCalledTimes(3);
-    expect(local.embedWithLocalModel.mock.calls[0]![0].texts).toHaveLength(MAX_EMBED_BATCH_SIZE);
+    expect(local.embedWithLocalModel.mock.calls[0]![0].texts).toHaveLength(EMBED_INFERENCE_BATCH_SIZE);
     expect(local.embedWithLocalModel.mock.calls[2]![0].texts).toHaveLength(5);
-    // Batching must not reorder: vector N still belongs to input N.
-    expect(vectors[0]).toEqual([0]);
-    expect(vectors[inputCount - 1]).toEqual([inputCount - 1]);
+  });
+
+  it("groups similar lengths into the same inference batch", async () => {
+    // The whole point of sorting: a long text must not be batched with short ones,
+    // because the batch pads every sequence to its longest member.
+    const long = "L".repeat(4000);
+    const short = "s";
+    // Interleaved on arrival, so only sorting can separate them.
+    const inputs = Array.from({ length: EMBED_INFERENCE_BATCH_SIZE * 2 }, (_, index) =>
+      index % 2 === 0 ? short : long,
+    );
+
+    await createEmbeddingProvider().embed(inputs);
+
+    expect(local.embedWithLocalModel).toHaveBeenCalledTimes(2);
+    const firstBatch = local.embedWithLocalModel.mock.calls[0]![0].texts as string[];
+    const secondBatch = local.embedWithLocalModel.mock.calls[1]![0].texts as string[];
+    // Each batch is length-homogeneous rather than half short and half long.
+    expect(new Set(firstBatch.map((text) => text.length)).size).toBe(1);
+    expect(new Set(secondBatch.map((text) => text.length)).size).toBe(1);
+    expect(firstBatch[0]!.length).toBeLessThan(secondBatch[0]!.length);
+  });
+
+  it("returns vectors in the caller's order even though it batches by length", async () => {
+    // The load-bearing contract. embedding-store pairs vectors[index] with batch[index]
+    // positionally, so a scatter bug would attach every chunk the wrong vector and
+    // corrupt retrieval with no error and nothing visibly wrong in the data.
+    // Text length here is deliberately the INVERSE of input order, so any code path
+    // that returns sorted order instead of original order fails loudly.
+    const inputCount = EMBED_INFERENCE_BATCH_SIZE * 3;
+    const inputs = Array.from({ length: inputCount }, (_, index) =>
+      `${index}:${"x".repeat(inputCount - index)}`,
+    );
+    // Vector identity is derived from the text itself, so a mismatch is detectable.
+    local.embedWithLocalModel.mockImplementation(async ({ texts }: { texts: string[] }) =>
+      texts.map((text) => [Number(text.replace("search_document: ", "").split(":")[0])]),
+    );
+
+    const vectors = await createEmbeddingProvider().embed(inputs);
+
+    expect(vectors).toEqual(Array.from({ length: inputCount }, (_, index) => [index]));
   });
 
   it("truncates oversized input after prefixing, so the prefix always survives", async () => {
