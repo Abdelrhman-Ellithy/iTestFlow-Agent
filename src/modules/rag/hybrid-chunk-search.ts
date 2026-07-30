@@ -8,6 +8,7 @@ import { searchProjectContextByTrigram } from "./trigram-search";
 import { fuseByReciprocalRank } from "./hybrid-ranking";
 import { dedupeNearDuplicateChunks } from "./near-duplicate-chunks";
 import { metadataFilterParams, workItemPathFilterSql, workItemTypeFilterSql, type MetadataFilter } from "./metadata-filter";
+import { createRerankProvider, type RerankProvider } from "./rerank-provider";
 
 /**
  * Shared FTS + semantic + trigram chunk search, used by both
@@ -47,11 +48,18 @@ export async function searchProjectChunksHybrid(input: {
   maxChunksPerWorkItem?: number;
   /** undefined -> resolve the deployment-configured backend; null -> force semantic off (tests). */
   embeddingProvider?: EmbeddingProvider | null;
+  /** undefined -> resolve the deployment-configured backend; null -> force rerank off (tests). */
+  rerankProvider?: RerankProvider | null;
   /** Opt-in restriction by work item type / area path / iteration path. Never state. */
   filter?: MetadataFilter;
 }): Promise<FusedChunkResult[]> {
   const scope = assertProjectScope(input.scope);
   const maxChunksPerWorkItem = Math.max(1, Math.trunc(input.maxChunksPerWorkItem ?? 1));
+  const rerankProvider = input.rerankProvider !== undefined ? input.rerankProvider : createRerankProvider();
+  // Reranking needs real query text, the same choice semantic search makes: a
+  // conversational follow-up needs prior turns folded in to mean anything, but a
+  // cross-encoder scores meaning, not tokens, so it gets the same text semantic does.
+  const rerankQuery = input.semanticQuery ?? input.rawQuery;
 
   let ftsRows: Array<HybridChunkRow & { rank: number }> = [];
   try {
@@ -130,30 +138,76 @@ export async function searchProjectChunksHybrid(input: {
   // single-list fusion through RRF, which would flatten its real score spread into
   // near-identical normalized scores for no reason.
   if (!semanticRows.length && !trigramRows.length) {
-    const ftsResults = ftsRows.map((row) => ({ row, score: row.rank }));
-    const deduped = dedupeNearDuplicateChunks(
-      ftsResults.map((r) => ({ item: r, text: r.row.content })),
-    );
-    return applyPerWorkItemCap(
-      deduped.map((d) => d.item),
+    return finalizeSearchResults({
+      ranked: ftsRows.map((row) => ({ row, score: row.rank })),
+      query: rerankQuery,
       maxChunksPerWorkItem,
-      input.topK,
-    );
+      topK: input.topK,
+      rerankProvider,
+    });
   }
 
   const fused = fuseByReciprocalRank<HybridChunkRow>({
     lists: [ftsRows, semanticRows, trigramRows].filter((list) => list.length > 0),
     getKey: (row) => row.id,
   });
-  const fusedResults = fused.map(({ item, score }) => ({ row: item, score }));
-  const deduped = dedupeNearDuplicateChunks(
-    fusedResults.map((r) => ({ item: r, text: r.row.content })),
-  );
-  return applyPerWorkItemCap(
-    deduped.map((d) => d.item),
+  return finalizeSearchResults({
+    ranked: fused.map(({ item, score }) => ({ row: item, score })),
+    query: rerankQuery,
     maxChunksPerWorkItem,
-    input.topK,
-  );
+    topK: input.topK,
+    rerankProvider,
+  });
+}
+
+// Widen the reranker's candidate pool past the caller's requested topK: reranking a
+// pool no larger than topK could only ever reorder results the caller was already
+// going to receive, never surface a chunk RRF/ts_rank_cd ranked just outside the
+// cutoff. Ceiling bounds rerank cost when a caller requests a large topK.
+const RERANK_POOL_WIDTH_MULTIPLIER = 3;
+const RERANK_POOL_CEILING = 50;
+
+/**
+ * Shared tail of both return paths above: dedup, optionally rerank, then apply the
+ * caller's real per-work-item cap. Isolated so the FTS-only and fused paths -- which
+ * differ only in how `ranked` was produced -- cannot drift on what happens after.
+ */
+async function finalizeSearchResults(input: {
+  ranked: FusedChunkResult[];
+  query: string;
+  maxChunksPerWorkItem: number;
+  topK: number;
+  rerankProvider: RerankProvider | null;
+}): Promise<FusedChunkResult[]> {
+  const deduped = dedupeNearDuplicateChunks(
+    input.ranked.map((entry) => ({ item: entry, text: entry.row.content })),
+  ).map((entry) => entry.item);
+
+  if (!input.rerankProvider) {
+    return applyPerWorkItemCap(deduped, input.maxChunksPerWorkItem, input.topK);
+  }
+
+  const widePoolSize = Math.min(RERANK_POOL_CEILING, input.topK * RERANK_POOL_WIDTH_MULTIPLIER);
+  const candidates = applyPerWorkItemCap(deduped, input.maxChunksPerWorkItem, widePoolSize);
+
+  try {
+    const scores = await input.rerankProvider.rerank(
+      input.query,
+      candidates.map((entry) => entry.row.content),
+    );
+    if (scores.length !== candidates.length) {
+      throw new Error(`Reranker returned ${scores.length} scores for ${candidates.length} candidates.`);
+    }
+    const reordered = candidates
+      .map((entry, index) => ({ row: entry.row, score: scores[index]! }))
+      .sort((first, second) => second.score - first.score);
+    return applyPerWorkItemCap(reordered, input.maxChunksPerWorkItem, input.topK);
+  } catch (error) {
+    // Same resilience pattern as FTS/semantic/trigram above: a broken reranker
+    // degrades to the pre-rerank order rather than losing results.
+    console.error("Hybrid chunk search: rerank failed; keeping fused order.", error);
+    return applyPerWorkItemCap(deduped, input.maxChunksPerWorkItem, input.topK);
+  }
 }
 
 // Each source list is already capped per work item on its own (SQL ROW_NUMBER for

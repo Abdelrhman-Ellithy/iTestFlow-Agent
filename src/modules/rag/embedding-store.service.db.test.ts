@@ -120,44 +120,47 @@ describeDb("embedding store and hybrid retrieval (DB-backed)", () => {
   });
 
   it("embeds every active chunk once and is idempotent on re-run", async () => {
+    // Each item has both a description and acceptance criteria, so field-aware
+    // chunking produces two chunks per item (a core unit and an acceptance_criteria
+    // unit) -- 4 chunks across the two items, not 2.
     await sync([paymentItem(), telemetryItem()]);
     const provider = fakeEmbeddingProvider();
 
     const first = await syncProjectChunkEmbeddings({ scope, provider });
-    expect(first).toEqual({ embeddedChunkCount: 2, removedEmbeddingCount: 0 });
+    expect(first).toEqual({ embeddedChunkCount: 4, removedEmbeddingCount: 0 });
 
     const second = await syncProjectChunkEmbeddings({ scope, provider });
     expect(second).toEqual({ embeddedChunkCount: 0, removedEmbeddingCount: 0 });
 
     const rows = await embeddingRows();
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(4);
     expect(rows.every((row) => row.vector_reference === chunkVectorReference(provider))).toBe(true);
   });
 
   it("re-embeds in place when the configured model changes, without duplicating rows", async () => {
     const otherProvider = fakeEmbeddingProvider("other-model");
     const swapped = await syncProjectChunkEmbeddings({ scope, provider: otherProvider });
-    expect(swapped).toEqual({ embeddedChunkCount: 2, removedEmbeddingCount: 0 });
+    expect(swapped).toEqual({ embeddedChunkCount: 4, removedEmbeddingCount: 0 });
 
     const rows = await embeddingRows();
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(4);
     expect(rows.every((row) => row.vector_reference === chunkVectorReference(otherProvider))).toBe(true);
   });
 
   it("removes embeddings whose chunks were deleted by a rebuild, and re-embeds surviving ones", async () => {
-    // Rebuild with only the telemetry item: the payment chunk disappears, and its
-    // embedding row must go with it. Rebuild unconditionally deletes and reinserts
-    // every chunk (even byte-identical content), which bumps document_chunks.updated_at
-    // for the surviving telemetry chunk too -- so its pre-rebuild embedding is now
-    // stale by the staleness check and legitimately gets re-embedded. This is an
-    // accepted cost of an explicit full rebuild, not a bug.
+    // Rebuild with only the telemetry item: the payment item's two chunks disappear,
+    // and their embedding rows must go with them. Rebuild unconditionally deletes and
+    // reinserts every chunk (even byte-identical content), which bumps
+    // document_chunks.updated_at for the surviving telemetry chunks too -- so their
+    // pre-rebuild embeddings are now stale by the staleness check and legitimately
+    // get re-embedded. This is an accepted cost of an explicit full rebuild, not a bug.
     await sync([telemetryItem()], "rebuild");
     const result = await syncProjectChunkEmbeddings({ scope, provider: fakeEmbeddingProvider("other-model") });
 
-    expect(result).toEqual({ embeddedChunkCount: 1, removedEmbeddingCount: 1 });
+    expect(result).toEqual({ embeddedChunkCount: 2, removedEmbeddingCount: 2 });
     const rows = await embeddingRows();
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.chunk_id).toContain("_202_");
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.chunk_id.includes("_202_"))).toBe(true);
   });
 
   it("ranks semantic search by cosine similarity and scopes vectors to the provider reference", async () => {

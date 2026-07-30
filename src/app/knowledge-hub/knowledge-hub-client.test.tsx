@@ -125,6 +125,12 @@ function knowledgeOpsProps(onReportMiss = vi.fn().mockResolvedValue(true)) {
     onExport: vi.fn(),
     onReportMiss,
     onTransitionIssue: vi.fn().mockResolvedValue(undefined),
+    benchmarkCases: [],
+    benchmarkVisible: false,
+    benchmarkLoading: false,
+    benchmarkLabelingId: null,
+    onToggleBenchmark: vi.fn(),
+    onLabelBenchmarkCase: vi.fn().mockResolvedValue(undefined),
   };
 }
 

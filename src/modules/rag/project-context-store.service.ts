@@ -13,6 +13,7 @@ import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-pro
 import { syncProjectChunkEmbeddings } from "./embedding-store.service";
 import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
 import type { MetadataFilter } from "./metadata-filter";
+import type { RerankProvider } from "./rerank-provider";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
 import { recordProjectKnowledgeLog, regroundLegacyProjectKnowledgeCandidates } from "./project-knowledge-compiled.service";
 import { acquireProjectKnowledgeLock } from "./project-knowledge-lock";
@@ -683,6 +684,12 @@ export async function retrieveStoredProjectContext(input: {
    * loads the ~131 MB ONNX weights.
    */
   embeddingProvider?: EmbeddingProvider | null;
+  /**
+   * Reranking override, mainly for tests: undefined uses the built-in local
+   * cross-encoder, null disables reranking for this call so a test never loads
+   * the model weights.
+   */
+  rerankProvider?: RerankProvider | null;
   /** Opt-in restriction by work item type / area path / iteration path. Never state. */
   filter?: MetadataFilter;
 }): Promise<LlmContextSource[]> {
@@ -740,6 +747,7 @@ export async function retrieveStoredProjectContext(input: {
     topK,
     maxChunksPerWorkItem,
     embeddingProvider,
+    rerankProvider: input.rerankProvider,
     filter: input.filter,
   });
   const maxScore = fused[0]?.score ?? 0;

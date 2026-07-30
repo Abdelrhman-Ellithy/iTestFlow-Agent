@@ -224,7 +224,10 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       unchangedCount: 0,
       inactiveCount: 0,
       indexedWorkItemCount: 3,
-      indexedChunkCount: 3,
+      // Each fixture has both a description and acceptance criteria, so field-aware
+      // chunking produces two chunks per item (a core unit and an
+      // acceptance_criteria unit) -- 6 chunks across the three items, not 3.
+      indexedChunkCount: 6,
       skippedEmptyCount: 0,
     });
 
@@ -234,9 +237,12 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     expect(rows.every((row) => Boolean(row.content_hash))).toBe(true);
     expect(rows.every((row) => Boolean(row.current_snapshot_id))).toBe(true);
 
-    // Short work items land as exactly one chunk each, keyed to their work item.
+    // Each fixture has a description and acceptance criteria, so field-aware
+    // chunking lands two chunks per work item, keyed to that work item.
     const chunks = await chunkRows(PROJ_A);
-    expect(chunks.map((chunk) => chunk.azure_work_item_id).sort()).toEqual(["101", "102", "103"]);
+    expect(chunks.map((chunk) => chunk.azure_work_item_id).sort()).toEqual([
+      "101", "101", "102", "102", "103", "103",
+    ]);
     expect(chunks.every((chunk) => Boolean(chunk.source_snapshot_id))).toBe(true);
 
     const snapshots = await sqlAll<{ azure_work_item_id: string; ado_revision: number; fields_json: unknown }>(
@@ -394,12 +400,14 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     expect(rows.filter((row) => row.sync_status === "active").map((row) => row.azure_work_item_id)).toEqual(["102", "103"]);
     expect(rows.find((row) => row.azure_work_item_id === "101")?.sync_status).toBe("inactive");
 
-    // The inactive item's chunk stays on disk but stops feeding retrieval and listing.
+    // The inactive item's chunks stay on disk but stop feeding retrieval and listing.
+    // checkoutItem (101) has both a description and acceptance criteria, so
+    // field-aware chunking leaves it with two orphaned chunks, not one.
     const orphanChunks = await sqlGet<{ count: number }>(
       `SELECT COUNT(*)::int AS count FROM document_chunks WHERE project_id = @projectId AND azure_work_item_id = '101'`,
       { projectId: PROJ_A },
     );
-    expect(orphanChunks?.count).toBe(1);
+    expect(orphanChunks?.count).toBe(2);
     expect(await retrieveStoredProjectContext({ scope: scopeA, query: "payment gateway", embeddingProvider: null })).toEqual([]);
 
     const recent = await getRecentProjectContext({ scope: scopeA });
@@ -491,8 +499,10 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       query: "words matching nothing indexed",
       workItemIds: ["102"],
     });
-    expect(sources.map((source) => source.workItemId)).toEqual(["102"]);
-    expect(sources[0]?.relevanceScore).toBe(1);
+    // refundItem (102) has both a description and acceptance criteria, so
+    // field-aware chunking returns two chunks -- one source per chunk, both scored 1.
+    expect(sources.map((source) => source.workItemId)).toEqual(["102", "102"]);
+    expect(sources.every((source) => source.relevanceScore === 1)).toBe(true);
   });
 
   it("caps retrieval at one chunk per work item so a verbose item cannot crowd out weaker matches", async () => {

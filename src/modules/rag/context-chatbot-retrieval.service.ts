@@ -399,6 +399,11 @@ export async function retrieveContextChatbotEvidence(input: {
    * search entirely so a test never loads the ~131 MB ONNX weights.
    */
   embeddingProvider?: EmbeddingProvider | null;
+  /**
+   * Seam for tests: undefined uses the built-in local cross-encoder, null skips
+   * reranking entirely so a test never loads the model weights.
+   */
+  rerankProvider?: RerankProvider | null;
   /** Opt-in restriction by work item type / area path / iteration path. Never state. */
   filter?: MetadataFilter;
 }): Promise<ContextChatbotEvidence> {
