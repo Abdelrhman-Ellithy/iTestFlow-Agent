@@ -176,6 +176,7 @@
     "src/modules/workspace/workspace.service.ts",
     "src/scripts/manage-org.ts",
     "src/scripts/run-retrieval-benchmark.ts",
+    "src/scripts/verify-context-index.ts",
     "src/scripts/repair-context-index.ts",
     "src/shared/lib/format.ts",
     "src/shared/lib/local-day.ts",

@@ -29,6 +29,7 @@
     "worker": "node --conditions=react-server --import tsx src/worker/main.ts",
     "worker:dev": "node --env-file=.env --conditions=react-server --watch --import tsx src/worker/main.ts",
     "context:repair": "node --env-file=.env --conditions=react-server --import tsx src/scripts/repair-context-index.ts",
+    "context:verify": "node --env-file=.env --conditions=react-server --import tsx src/scripts/verify-context-index.ts",
     "org:enable": "node --env-file=.env --conditions=react-server --import tsx src/scripts/manage-org.ts enable",
     "org:disable": "node --env-file=.env --conditions=react-server --import tsx src/scripts/manage-org.ts disable",
     "benchmark:run": "node --env-file=.env --conditions=react-server --import tsx src/scripts/run-retrieval-benchmark.ts"

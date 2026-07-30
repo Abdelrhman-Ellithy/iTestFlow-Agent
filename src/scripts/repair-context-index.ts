@@ -118,7 +118,13 @@ async function main() {
     return;
   }
 
-  console.log(`Repairing ${projects.length} project(s). Embedding runs locally and may take a minute.`);
+  // Embedding is single-threaded local inference: measured ~380ms per chunk, so a
+  // recipe bump on a 1,155-chunk project took ~7 minutes. Scales linearly, so say so
+  // rather than letting an operator think a stalled run is normal.
+  console.log(
+    `Repairing ${projects.length} project(s). Embedding runs locally at roughly 400ms per chunk, `
+    + `so a few thousand chunks can take several minutes.`,
+  );
   for (const project of projects) await repairProject(project);
   console.log("\nDone. Retrieval should now see the full indexed corpus.");
 }

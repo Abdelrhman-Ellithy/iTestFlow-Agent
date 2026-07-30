@@ -62,7 +62,15 @@ type RecentContextRow = {
 export type ProjectContextSortBy = "lastIndexedAt" | "type" | "state";
 export type ProjectContextSortDirection = "asc" | "desc";
 
-const CURRENT_CHUNK_TEXT_RECIPE_VERSION = "v4";
+/**
+ * Shape of the text handed to chunkText, versioned so a change to it can force a
+ * re-chunk. Distinct from CHUNK_RECIPE_VERSION in embedding-store.service, which
+ * versions the EMBEDDED projection of a chunk: the two move independently, and only a
+ * real sync can act on this one because re-chunking needs the source work item.
+ *
+ * v4: field-aware units (core / acceptance_criteria) instead of one flat blob.
+ */
+export const CURRENT_CHUNK_TEXT_RECIPE_VERSION = "v4";
 
 const UPSERT_WORK_ITEM_SQL = `
   INSERT INTO azure_devops_work_items (
