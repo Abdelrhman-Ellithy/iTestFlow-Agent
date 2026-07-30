@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  requireExternalLlmEnabled,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { buildTestCaseGenerationPromptDraft } from "@/modules/test-case-design/application/test-case-generation.service";
 import { defaultTestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import { TestDesignOptionsRequestSchema } from "@/modules/test-case-design/test-design-options.schema";
@@ -35,6 +40,7 @@ export async function POST(request: Request) {
   try {
     const options = parsed.data.options ?? defaultTestDesignOptions;
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireExternalLlmEnabled(ctx);
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const targetRequirement = await adapter.fetchWorkItemById({

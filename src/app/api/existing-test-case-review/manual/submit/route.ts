@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
 import { countTestCategories } from "@/modules/analytics/test-category-normalization";
 import { z } from "zod";
-import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  requireExternalLlmEnabled,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { completeManualExistingTestCaseReview } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
 import { deriveExistingTestCaseReviewMetrics } from "@/modules/existing-test-case-review/review-metrics";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
@@ -38,6 +43,7 @@ export async function POST(request: Request) {
   let analyticsRunId: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireExternalLlmEnabled(ctx);
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     analyticsRunId = startWorkflowRun({
       scope: trustedScope,

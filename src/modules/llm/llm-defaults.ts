@@ -1,4 +1,7 @@
 export const MAX_OUTPUT_TOKEN_CAP_OPTIONS = [16000, 32000, 64000] as const;
+// A workspace-wide override is limited to common context-window sizes.
+// A null workspace setting means use the model capability automatically.
+export const MODEL_INPUT_TOKEN_LIMIT_OVERRIDE_OPTIONS = [16000, 32000, 64000, 128000, 200000, 1000000, 2000000] as const;
 export const RETRY_ATTEMPT_OPTIONS = [0, 1, 2, 3] as const;
 
 // Fallback ceiling for the plain-text generation path (generateText) when a caller does not

@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  requireExternalLlmEnabled,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
   buildTestExecutionEffortPreview,
@@ -44,6 +49,7 @@ export async function POST(request: Request) {
   let analyticsRunId: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireExternalLlmEnabled(ctx);
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     analyticsRunId = startWorkflowRun({
       scope: trustedScope,

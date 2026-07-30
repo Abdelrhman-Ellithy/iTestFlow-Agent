@@ -2,12 +2,16 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
   authErrorResponse,
+  requireExternalLlmEnabled,
   requireWorkflowContext,
   requireWorkflowRole,
 } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
-import { buildProjectKnowledgeManualDraft } from "@/modules/rag/project-knowledge.service";
+import {
+  buildProjectKnowledgeManualDraft,
+  resumeLatestProjectKnowledgeManualDraft,
+} from "@/modules/rag/project-knowledge.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
 export const runtime = "nodejs";
@@ -15,6 +19,7 @@ export const runtime = "nodejs";
 const RequestSchema = z.object({
   scope: ProjectScopeSchema,
   mode: z.enum(["incremental", "full"]).optional().default("full"),
+  resumeLatest: z.boolean().optional().default(false),
 });
 
 export async function POST(request: Request) {
@@ -26,7 +31,13 @@ export async function POST(request: Request) {
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
     await requireWorkflowRole(ctx, ["owner", "admin"], "Only workspace owners and admins can build project knowledge.");
+    await requireExternalLlmEnabled(ctx);
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
+    if (parsed.data.resumeLatest) {
+      return NextResponse.json({
+        draft: await resumeLatestProjectKnowledgeManualDraft({ scope: trustedScope }),
+      });
+    }
     return NextResponse.json(await buildProjectKnowledgeManualDraft({
       scope: trustedScope,
       actor: ctx.userId,

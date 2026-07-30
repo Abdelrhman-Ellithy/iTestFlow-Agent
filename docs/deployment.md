@@ -79,6 +79,7 @@ Owners/admins manage workspace-level settings:
 - Context retrieval top-K override
 - LLM max output token cap
 - LLM retry attempts
+- Whether the manual External LLM copy/paste mode is available to workspace members
 - Workspace sync credential
 - Workspace sync schedule and filters
 

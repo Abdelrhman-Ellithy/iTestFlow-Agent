@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   requireWorkflowContext: vi.fn(),
   requireWorkflowRole: vi.fn(),
+  requireExternalLlmEnabled: vi.fn(),
   resolveProjectScope: vi.fn(),
   validateProjectKnowledgeManualBatch: vi.fn(),
 }));
@@ -13,6 +14,7 @@ vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal
     ...actual,
     requireWorkflowContext: mocks.requireWorkflowContext,
     requireWorkflowRole: mocks.requireWorkflowRole,
+    requireExternalLlmEnabled: mocks.requireExternalLlmEnabled,
   };
 });
 vi.mock("@/modules/projects/workspace-projects.service", () => ({
@@ -42,6 +44,7 @@ describe("POST /api/context/knowledge/manual/validate", () => {
     vi.clearAllMocks();
     mocks.requireWorkflowContext.mockResolvedValue({ userId: "user-1", workspace: { id: "ws-1" } });
     mocks.requireWorkflowRole.mockResolvedValue(undefined);
+    mocks.requireExternalLlmEnabled.mockResolvedValue(undefined);
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
     mocks.validateProjectKnowledgeManualBatch.mockResolvedValue({ sections: [] });
   });

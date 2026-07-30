@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { completeManualBugReport } from "@/modules/bug-reporting/bug-reporting.service";
-import { authErrorResponse, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import {
+  authErrorResponse,
+  requireExternalLlmEnabled,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { isAppError } from "@/modules/shared/errors/app-error";
@@ -31,6 +35,7 @@ export async function POST(request: Request) {
   let analyticsRunId: string | undefined;
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireExternalLlmEnabled(ctx);
     trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     analyticsRunId = startWorkflowRun({
       scope: trustedScope,

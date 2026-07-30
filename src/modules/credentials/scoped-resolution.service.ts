@@ -75,6 +75,20 @@ export async function requireWorkflowRole(
   }
 }
 
+export const EXTERNAL_LLM_DISABLED_MESSAGE = "External LLM is disabled by a workspace owner or admin.";
+
+/**
+ * Ensures that the workspace owner/admin has allowed the manual copy/paste
+ * External LLM workflow. A missing settings row intentionally preserves the
+ * backwards-compatible enabled default.
+ */
+export async function requireExternalLlmEnabled(ctx: WorkflowContext): Promise<void> {
+  const settings = await getWorkspaceSettings(ctx.workspace.id);
+  if (settings?.externalLlmEnabled === false) {
+    throw new WorkflowAuthError(EXTERNAL_LLM_DISABLED_MESSAGE, 403);
+  }
+}
+
 export async function getUserAzureAdapter(
   ctx: WorkflowContext,
   project: ProjectScope,
@@ -153,7 +167,7 @@ export async function getUserLLMProvider(ctx: WorkflowContext): Promise<LLMProvi
     apiKey: llm.apiKey,
     model: llm.model,
     baseUrl: llm.baseUrl,
-    maxInputTokens: llm.maxInputTokens,
+    maxInputTokens: wsSettings?.modelInputTokenLimitOverride ?? undefined,
     maxOutputTokenCap: wsSettings?.maxOutputTokenCap ?? getMaxOutputTokenCapDefaultFromEnv(),
     retryAttempts: wsSettings?.llmRetryAttempts ?? DEFAULT_RETRY_ATTEMPTS,
   });
@@ -173,8 +187,9 @@ export function authErrorResponse(error: unknown): NextResponse | null {
     });
   }
   if (error instanceof WorkflowAuthError) {
+    const isExternalLlmDisabled = error.message === EXTERNAL_LLM_DISABLED_MESSAGE;
     return routeErrorResponse(error, {
-      domain: error.message.includes("LLM") ? "llm" : "auth",
+      domain: isExternalLlmDisabled ? "auth" : error.message.includes("LLM") ? "llm" : "auth",
       fallback: error.message,
       status: error.status,
     });

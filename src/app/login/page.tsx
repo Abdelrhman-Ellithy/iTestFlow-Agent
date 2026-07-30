@@ -9,6 +9,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  Info,
   LockKeyhole,
 } from "lucide-react"
 import { toast } from "sonner"
@@ -24,6 +25,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { resolveLoginDestination } from "@/app/login/login-destination"
 import { apiErrorMessage } from "@/shared/lib/api-error-message"
 
@@ -110,6 +112,31 @@ function LoginBackgroundFlow() {
         </g>
       ))}
     </svg>
+  )
+}
+
+function OrganizationConfigurationHelp() {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          aria-label="How to add an Azure DevOps organization"
+          className="grid size-10 shrink-0 place-items-center rounded-lg border border-input bg-background/80 text-muted-foreground outline-none transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card"
+        >
+          <Info className="size-4" aria-hidden="true" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="right" sideOffset={8} className="max-w-sm whitespace-normal text-left leading-5">
+        <span>
+          Organizations are configured by your iTestFlow administrator. To add one, update{" "}
+          <code className="rounded bg-background/15 px-1 font-mono text-[11px]">BOOTSTRAP_AZURE_ORGS</code> in the
+          server&apos;s <code className="rounded bg-background/15 px-1 font-mono text-[11px]">.env</code> file with an{" "}
+          <code className="rounded bg-background/15 px-1 font-mono text-[11px]">orgUrl|ownerEmail</code> entry, then
+          restart iTestFlow. Example: <code className="rounded bg-background/15 px-1 font-mono text-[11px]">https://dev.azure.com/new-org|owner@company.com</code>.
+        </span>
+      </TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -201,24 +228,27 @@ export default function LoginPage() {
                 <Label htmlFor="organization">Azure DevOps organization</Label>
                 {orgsFallback ? (
                   <>
-                    <div className="relative">
-                      <Building2
-                        className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-primary"
-                        aria-hidden="true"
-                      />
-                      <Input
-                        id="organization"
-                        className="h-10 bg-background/80 pl-11 pr-3 placeholder:text-[13px] sm:placeholder:text-sm"
-                        placeholder="contoso or https://dev.azure.com/contoso"
-                        value={organization}
-                        onChange={(event) => setOrganization(event.target.value)}
-                        autoCapitalize="none"
-                        autoComplete="organization"
-                        autoCorrect="off"
-                        spellCheck={false}
-                        aria-describedby="organization-help"
-                        required
-                      />
+                    <div className="flex min-w-0 items-center gap-2">
+                      <div className="relative min-w-0 flex-1">
+                        <Building2
+                          className="pointer-events-none absolute left-4 top-1/2 size-5 -translate-y-1/2 text-primary"
+                          aria-hidden="true"
+                        />
+                        <Input
+                          id="organization"
+                          className="h-10 bg-background/80 pl-11 pr-3 placeholder:text-[13px] sm:placeholder:text-sm"
+                          placeholder="contoso or https://dev.azure.com/contoso"
+                          value={organization}
+                          onChange={(event) => setOrganization(event.target.value)}
+                          autoCapitalize="none"
+                          autoComplete="organization"
+                          autoCorrect="off"
+                          spellCheck={false}
+                          aria-describedby="organization-help"
+                          required
+                        />
+                      </div>
+                      <OrganizationConfigurationHelp />
                     </div>
                     <p id="organization-help" className="text-xs leading-5 text-muted-foreground">
                       Enter your organization name or full Azure DevOps URL.
@@ -226,33 +256,36 @@ export default function LoginPage() {
                   </>
                 ) : (
                   <>
-                    <div className="relative">
-                      <Building2
-                        className="pointer-events-none absolute left-4 top-1/2 z-10 size-5 -translate-y-1/2 text-primary"
-                        aria-hidden="true"
-                      />
-                      <Select
-                        value={organization}
-                        onValueChange={setOrganization}
-                        disabled={orgsLoading || submitting}
-                      >
-                        <SelectTrigger
-                          id="organization"
-                          className="h-10 w-full bg-background/80 pl-11 pr-3"
-                          aria-describedby="organization-help"
+                    <div className="flex min-w-0 items-center gap-2">
+                      <div className="relative min-w-0 flex-1">
+                        <Building2
+                          className="pointer-events-none absolute left-4 top-1/2 z-10 size-5 -translate-y-1/2 text-primary"
+                          aria-hidden="true"
+                        />
+                        <Select
+                          value={organization}
+                          onValueChange={setOrganization}
+                          disabled={orgsLoading || submitting}
                         >
-                          <SelectValue
-                            placeholder={orgsLoading ? "Loading organizations…" : "Select your organization"}
-                          />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {organizations.map((org) => (
-                            <SelectItem key={org.azureOrgUrl} value={org.azureOrgUrl}>
-                              {org.name}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                          <SelectTrigger
+                            id="organization"
+                            className="h-10 w-full bg-background/80 pl-11 pr-3"
+                            aria-describedby="organization-help"
+                          >
+                            <SelectValue
+                              placeholder={orgsLoading ? "Loading organizations…" : "Select your organization"}
+                            />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {organizations.map((org) => (
+                              <SelectItem key={org.azureOrgUrl} value={org.azureOrgUrl}>
+                                {org.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <OrganizationConfigurationHelp />
                     </div>
                     <p id="organization-help" className="text-xs leading-5 text-muted-foreground">
                       Choose the organization you want to sign in to.

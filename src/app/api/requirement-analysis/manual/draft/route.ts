@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
+import {
+  authErrorResponse,
+  getUserAzureAdapter,
+  requireExternalLlmEnabled,
+  requireWorkflowContext,
+} from "@/modules/credentials/scoped-resolution.service";
 import { buildRequirementAnalysisPromptDraft } from "@/modules/requirement-analysis/application/requirement-analysis.service";
 import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
@@ -38,6 +43,7 @@ export async function POST(request: Request) {
 
   try {
     const ctx = await requireWorkflowContext(parsed.data.scope.workspaceId);
+    await requireExternalLlmEnabled(ctx);
     const trustedScope = await resolveProjectScope(ctx, parsed.data.scope);
     const adapter = await getUserAzureAdapter(ctx, trustedScope);
     const targetRequirement = await adapter.fetchWorkItemById({

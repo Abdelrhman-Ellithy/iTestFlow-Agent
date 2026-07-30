@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   requireWorkflowContext: vi.fn(),
+  requireExternalLlmEnabled: vi.fn(),
   getUserAzureAdapter: vi.fn(),
   resolveProjectScope: vi.fn(),
   resolveRetrievalTopK: vi.fn(),
@@ -13,6 +14,7 @@ vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal
   return {
     ...actual,
     requireWorkflowContext: mocks.requireWorkflowContext,
+    requireExternalLlmEnabled: mocks.requireExternalLlmEnabled,
     getUserAzureAdapter: mocks.getUserAzureAdapter,
   };
 });
@@ -56,6 +58,7 @@ describe("test-execution-effort route integration errors", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.requireWorkflowContext.mockResolvedValue(context);
+    mocks.requireExternalLlmEnabled.mockResolvedValue(undefined);
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
     mocks.getUserAzureAdapter.mockResolvedValue(fakeAzureAdapter());
     mocks.resolveRetrievalTopK.mockResolvedValue(6);

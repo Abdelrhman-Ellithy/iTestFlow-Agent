@@ -11,6 +11,7 @@ vi.mock("@/modules/workspace/workspace-request", async (importOriginal) => {
   return { ...actual, resolveWorkspaceRequest: mocks.resolveWorkspaceRequest };
 });
 vi.mock("@/modules/workspace/workspace-settings.service", () => ({
+  DEFAULT_EXTERNAL_LLM_ENABLED: true,
   getWorkspaceSettings: mocks.getWorkspaceSettings,
   upsertWorkspaceSettings: mocks.upsertWorkspaceSettings,
 }));
@@ -41,16 +42,37 @@ describe("workspace settings routes", () => {
       settings: {
         retrievalTopK: null,
         maxOutputTokenCap: null,
+        modelInputTokenLimitOverride: null,
         llmRetryAttempts: null,
+        externalLlmEnabled: true,
       },
     });
+  });
+
+  it("returns a persisted External LLM setting", async () => {
+    mocks.getWorkspaceSettings.mockResolvedValue({
+      retrievalTopK: null,
+      maxOutputTokenCap: null,
+      modelInputTokenLimitOverride: null,
+      llmRetryAttempts: null,
+      externalLlmEnabled: false,
+      manualBaselineMinutes: null,
+      reviewBaselineMinutes: null,
+    });
+
+    const response = await GET();
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).settings.externalLlmEnabled).toBe(false);
   });
 
   it("updates only validated settings under the server-resolved workspace", async () => {
     const response = await PUT(jsonRequest("/api/workspace/settings", {
       retrievalTopK: 12,
       maxOutputTokenCap: 16000,
+      modelInputTokenLimitOverride: 128000,
       llmRetryAttempts: 2,
+      externalLlmEnabled: false,
     }));
     expect(response.status).toBe(200);
     // Role guard requires owner/admin.
@@ -61,7 +83,9 @@ describe("workspace settings routes", () => {
         updatedByUserId: "admin-1",
         retrievalTopK: 12,
         maxOutputTokenCap: 16000,
+        modelInputTokenLimitOverride: 128000,
         llmRetryAttempts: 2,
+        externalLlmEnabled: false,
       }),
     );
   });
@@ -69,7 +93,9 @@ describe("workspace settings routes", () => {
   it.each([
     [{}, "Provide a setting to update."],
     [{ maxOutputTokenCap: 17000 }, "LLM output cap must be one of"],
+    [{ modelInputTokenLimitOverride: 17000 }, "Model input limit override must be one of"],
     [{ retrievalTopK: 1000 }, "less than or equal to 25"],
+    [{ externalLlmEnabled: "false" }, "Expected boolean"],
   ])("rejects invalid settings without writing", async (body, message) => {
     const response = await PUT(jsonRequest("/api/workspace/settings", body));
     expect(response.status).toBe(400);
@@ -82,6 +108,13 @@ describe("workspace settings routes", () => {
     const response = await GET();
     expect(response.status).toBe(403);
     expect(mocks.getWorkspaceSettings).not.toHaveBeenCalled();
+  });
+
+  it("rejects updates from a denied workspace role before writing settings", async () => {
+    mocks.resolveWorkspaceRequest.mockRejectedValue(new WorkspaceAccessError("Role denied."));
+    const response = await PUT(jsonRequest("/api/workspace/settings", { externalLlmEnabled: false }));
+    expect(response.status).toBe(403);
+    expect(mocks.upsertWorkspaceSettings).not.toHaveBeenCalled();
   });
 
   it("rethrows unexpected resolution and persistence failures", async () => {

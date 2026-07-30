@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   requireWorkflowContext: vi.fn(),
+  requireExternalLlmEnabled: vi.fn(),
   resolveProjectScope: vi.fn(),
   completeManualBugReport: vi.fn(),
   startWorkflowRun: vi.fn(),
@@ -11,7 +12,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/modules/credentials/scoped-resolution.service")>();
-  return { ...actual, requireWorkflowContext: mocks.requireWorkflowContext };
+  return {
+    ...actual,
+    requireWorkflowContext: mocks.requireWorkflowContext,
+    requireExternalLlmEnabled: mocks.requireExternalLlmEnabled,
+  };
 });
 vi.mock("@/modules/projects/workspace-projects.service", () => ({
   resolveProjectScope: mocks.resolveProjectScope,
@@ -48,6 +53,7 @@ describe("POST /api/bugs/manual/submit", () => {
       userId: "user-1",
       workspace: { id: "ws-1" },
     });
+    mocks.requireExternalLlmEnabled.mockResolvedValue(undefined);
     mocks.resolveProjectScope.mockResolvedValue(trustedScope);
     mocks.startWorkflowRun.mockReturnValue("run-1");
     mocks.completeManualBugReport.mockReturnValue({

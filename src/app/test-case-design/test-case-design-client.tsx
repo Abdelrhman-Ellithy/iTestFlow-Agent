@@ -53,6 +53,7 @@ import {
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH, normalizeExtraInstructions } from "@/modules/llm/extra-instructions";
 import { cn } from "@/lib/utils";
 import { caughtErrorMessage } from "@/shared/lib/api-error-message";
+import { useExternalLlmAvailability } from "@/shared/lib/use-external-llm-availability";
 
 export function TestCaseDesignClient() {
   const scope = useActiveProject();
@@ -62,6 +63,7 @@ export function TestCaseDesignClient() {
   const [targetWorkItemId, setTargetWorkItemId] = useState("");
   const workItemLookup = useWorkItemLookup({ scope, workItemId: targetWorkItemId });
   const [mode, setMode] = useState<WorkflowMode>("auto");
+  const externalLlmAvailability = useExternalLlmAvailability(scope?.workspaceId);
   const [extraInstructions, setExtraInstructions] = useState("");
   const [state, setState] = useState<ApiState<TestCaseGenerationRunResult>>({ loading: false, error: null, data: null });
   const gen = useAiGeneration();
@@ -77,6 +79,7 @@ export function TestCaseDesignClient() {
   const [manualResponse, setManualResponse] = useState("");
   const [manualSubmitLoading, setManualSubmitLoading] = useState(false);
   const [manualSubmitError, setManualSubmitError] = useState<string | null>(null);
+  const manualOperationVersionRef = useRef(0);
   const [testCases, setTestCases] = useState<GeneratedTestCase[]>([]);
   const [selectedTestCaseIds, setSelectedTestCaseIds] = useState<string[]>([]);
   const [testDesignSettings, setTestDesignSettings] = useState<TestDesignOptions>(() => ({
@@ -102,6 +105,16 @@ export function TestCaseDesignClient() {
     setManualResponse("");
     setManualSubmitError(null);
   }, [scope?.azureProjectId, cancelGeneration, cancelPreparation, endLoadingGameSession]);
+  useEffect(() => {
+    if (externalLlmAvailability.enabled || mode !== "manual") return;
+    manualOperationVersionRef.current += 1;
+    cancelPreparation();
+    setMode("auto");
+    setManualDraft({ loading: false, error: null, data: null });
+    setManualResponse("");
+    setManualSubmitLoading(false);
+    setManualSubmitError(null);
+  }, [cancelPreparation, externalLlmAvailability.enabled, mode]);
   const selectedTargetRangeOption = useMemo(
     () =>
       targetTestCaseRangeOptions.find((option) => option.id === testDesignSettings.targetTestCaseRange) ??
@@ -273,8 +286,9 @@ export function TestCaseDesignClient() {
   }
 
   async function prepareManualPrompt() {
-    if (!scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
+    if (!externalLlmAvailability.enabled || !scope || !targetWorkItemId || !testDesignOptionsValid || !extraInstructionsValid) return;
     if (prep.isRunning) return;
+    const manualOperationVersion = manualOperationVersionRef.current;
     setState({ loading: false, error: null, data: null });
     setTestCases([]);
     setSelectedTestCaseIds([]);
@@ -295,15 +309,18 @@ export function TestCaseDesignClient() {
       ),
     );
     if (data) {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualDraft({ loading: false, error: null, data });
       scrollToNextStep(promptSectionRef);
     } else {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualDraft({ loading: false, error: null, data: null });
     }
   }
 
   async function submitManualResponse() {
-    if (!scope || !targetWorkItemId || !manualDraft.data || !manualResponse.trim()) return;
+    if (!externalLlmAvailability.enabled || !scope || !targetWorkItemId || !manualDraft.data || !manualResponse.trim()) return;
+    const manualOperationVersion = manualOperationVersionRef.current;
     setManualSubmitLoading(true);
     setManualSubmitError(null);
     try {
@@ -316,12 +333,14 @@ export function TestCaseDesignClient() {
         contextCitations: manualDraft.data.contextCitations,
         retrievalTopK: manualDraft.data.retrievalTopK,
       });
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       applyGeneratedCases(data);
       scrollToNextStep(generatedCasesRef);
     } catch (error) {
+      if (manualOperationVersion !== manualOperationVersionRef.current) return;
       setManualSubmitError(caughtErrorMessage(error, "External LLM response validation failed."));
     } finally {
-      setManualSubmitLoading(false);
+      if (manualOperationVersion === manualOperationVersionRef.current) setManualSubmitLoading(false);
     }
   }
 
@@ -358,6 +377,7 @@ export function TestCaseDesignClient() {
             action={
               <GenerationModeToggle
                 mode={mode}
+                externalLlmAvailability={externalLlmAvailability}
                 onChange={(nextMode) => {
                   setHasUnfinishedWork(true);
                   setMode(nextMode);
@@ -387,7 +407,7 @@ export function TestCaseDesignClient() {
                     {gen.isRunning ? "Generating..." : "Generate"}
                   </Button>
                 ) : (
-                  <Button onClick={prepareManualPrompt} disabled={!scope || !targetWorkItemId || prep.isRunning || !testDesignOptionsValid || !extraInstructionsValid}>
+                  <Button onClick={prepareManualPrompt} disabled={!externalLlmAvailability.enabled || !scope || !targetWorkItemId || prep.isRunning || !testDesignOptionsValid || !extraInstructionsValid}>
                     {prep.isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                     {prep.isRunning ? "Preparing..." : "Prepare Prompt"}
                   </Button>

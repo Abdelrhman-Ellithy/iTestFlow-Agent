@@ -110,6 +110,7 @@ export const GATED_INCLUDE: string[] = [
   "src/app/api/context/knowledge/jobs/route.ts",
   "src/app/api/context/knowledge/promote/route.ts",
   "src/app/api/test-suite-migration/execute/route.ts",
+  "src/app/api/workspace/capabilities/route.ts",
   "src/app/api/workspace/members/[membershipId]/route.ts",
   "src/app/api/workspace/settings/route.ts",
   "src/app/api/workspace/sync-schedule/route.ts",
@@ -135,6 +136,7 @@ export const GATED_INCLUDE: string[] = [
   "src/shared/lib/api-error-message.ts",
   "src/shared/lib/cron-schedule.ts",
   "src/shared/lib/edited-count.ts",
+  "src/shared/lib/use-external-llm-availability.ts",
 ];
 
 /**
@@ -167,6 +169,7 @@ export const HIGH_RISK_GATED_INCLUDE: string[] = [
   "src/app/api/context/knowledge/jobs/route.ts",
   "src/app/api/context/knowledge/promote/route.ts",
   "src/app/api/test-suite-migration/execute/route.ts",
+  "src/app/api/workspace/capabilities/route.ts",
   "src/app/api/workspace/members/[membershipId]/route.ts",
   "src/app/api/workspace/settings/route.ts",
   "src/app/api/workspace/sync-schedule/route.ts",
