@@ -10,13 +10,16 @@ import {
   type BenchmarkRunSummary,
 } from "@/modules/rag/retrieval-benchmark-scorer";
 
-// Mirrors context-chatbot.service.ts's real retrieval call (its CONTEXT_CANDIDATE_LIMIT /
-// KNOWLEDGE_CANDIDATE_LIMIT / maxContextChunksPerWorkItem) so this measures the same
-// retrieval config the Business Owner Assistant actually uses, before evidence-budget's
-// later token-cost trimming — a prompt-size concern, unrelated to ranking quality.
-const CONTEXT_CANDIDATE_LIMIT = 40;
-const KNOWLEDGE_CANDIDATE_LIMIT = 120;
-const MAX_CONTEXT_CHUNKS_PER_WORK_ITEM = 2;
+// Imported, not restated: a benchmark that measures different retrieval settings from the
+// ones production uses stops being a benchmark the moment either side is tuned, and a
+// comment claiming two copies "mirror" each other cannot enforce that. Evidence-budget's
+// later token trimming is deliberately out of scope here — that is a prompt-size concern,
+// not a ranking-quality one.
+import {
+  CONTEXT_CANDIDATE_LIMIT,
+  KNOWLEDGE_CANDIDATE_LIMIT,
+  MAX_CONTEXT_CHUNKS_PER_WORK_ITEM,
+} from "@/modules/context-chatbot/context-chatbot.service";
 
 export type RetrievalBenchmarkCaseResult = {
   caseId: string;

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { MAX_CONTEXT_FETCH_LIMIT } from "@/lib/project-context-defaults";
 import { z } from "zod";
 import { ProjectScopeSchema, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
@@ -23,7 +24,7 @@ const RequestSchema = z.object({
   workItemTypes: z.array(z.string().min(1)).min(1),
   states: z.array(z.string().min(1)).min(1),
   mode: z.enum(["incremental", "rebuild"]).optional(),
-  limit: z.number().int().min(1).max(5000).optional(),
+  limit: z.number().int().min(1).max(MAX_CONTEXT_FETCH_LIMIT).optional(),
 });
 
 export async function POST(request: Request) {

@@ -61,9 +61,14 @@ async function countsFor(project: ProjectRow, expectedVectorReference: string): 
             AND coalesce(sync_status, 'active') = 'active')                       AS active_items,
         (SELECT count(*)::text FROM azure_devops_work_items
           WHERE project_id = @projectId AND azure_project_id = @azureProjectId
+            AND coalesce(sync_status, 'active') = 'active'
             AND chunk_recipe_version = @chunkRecipe)                              AS items_on_current_recipe,
+        -- Retired items are excluded deliberately: sync no longer touches them, so they
+        -- can never be re-chunked and would report a stale shape forever with no action
+        -- that could ever clear it.
         (SELECT count(*)::text FROM azure_devops_work_items
           WHERE project_id = @projectId AND azure_project_id = @azureProjectId
+            AND coalesce(sync_status, 'active') = 'active'
             AND chunk_recipe_version IS DISTINCT FROM @chunkRecipe)               AS items_stale_recipe,
         (SELECT count(*)::text FROM document_chunks
           WHERE project_id = @projectId AND azure_project_id = @azureProjectId
@@ -79,6 +84,7 @@ async function countsFor(project: ProjectRow, expectedVectorReference: string): 
             AND (metadata_json::jsonb ->> 'field') IS NULL)                       AS unlabelled_chunks,
         (SELECT count(*)::text FROM embeddings
           WHERE project_id = @projectId AND azure_project_id = @azureProjectId
+            AND source_type = 'azure_work_item_chunk'
             AND vector_reference = @vectorReference)                              AS embeddings_current,
         (SELECT count(*)::text FROM embeddings
           WHERE project_id = @projectId AND azure_project_id = @azureProjectId
@@ -107,6 +113,14 @@ function report(project: ProjectRow, counts: Counts): boolean {
   console.log(`  vectors at current recipe   : ${currentVectors}`);
 
   let healthy = true;
+  // A project with nothing indexed is not broken, it is empty. Reporting it unhealthy
+  // would make this exit non-zero for any org holding one never-synced project, which
+  // turns a deploy gate into a permanent false alarm.
+  const indexedItems = Number(counts.active_items);
+  if (!indexedItems) {
+    console.log("  not indexed yet             : nothing to verify (run a sync to populate it).");
+    return true;
+  }
   if (staleVectors > 0 || currentVectors === 0) {
     healthy = false;
     console.log(`  SEMANTIC SEARCH IS DARK     : ${staleVectors} vector(s) at an old recipe, ${currentVectors} usable.`);

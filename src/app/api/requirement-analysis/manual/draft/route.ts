@@ -10,6 +10,7 @@ import { buildRequirementAnalysisPromptDraft } from "@/modules/requirement-analy
 import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
 import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
@@ -61,7 +62,16 @@ export async function POST(request: Request) {
       }),
     });
     const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "requirement_analysis_manual" });
+    // The prepared prompt must match what the internal run sends for the same work item.
+    // Without a model window it fell back to a fixed default regardless of the workspace's
+    // configured model-input-limit, and without ranked keys it used keyword-only knowledge
+    // selection — so a user copying this prompt out got materially less context than
+    // production, silently. There is no LLM provider here, so the window comes from the
+    // workspace override: the admin's own statement of what their models accept.
+    const workspaceSettings = await getWorkspaceSettings(ctx.workspace.id);
     const draft = buildRequirementAnalysisPromptDraft({
+      maxInputTokens: workspaceSettings?.modelInputTokenLimitOverride ?? undefined,
+      relatedWorkItemsFloor: autoContext.retrievalTopK,
       scope: trustedScope,
       targetRequirement,
       relatedWorkItems: autoContext.relatedWorkItems,

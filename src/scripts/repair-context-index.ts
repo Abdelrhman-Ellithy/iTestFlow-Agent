@@ -99,8 +99,18 @@ async function repairProject(project: ProjectRow) {
   console.log(`  full-text/trigram index     : ${indexed} of ${stored} chunks`);
 
   // Embeds only what is missing at the current recipe, so a re-run costs nothing.
-  const embedding = await syncProjectChunkEmbeddings({ scope, provider: createEmbeddingProvider() });
-  console.log(`  embedded chunks             : ${embedding.embeddedChunkCount} (removed orphans: ${embedding.removedEmbeddingCount})`);
+  // Caught so a `--all` run does not abandon every remaining project because one
+  // project's embedding failed — the lexical repair above has already landed for this
+  // project either way, and re-running picks up whatever did not embed.
+  try {
+    const embedding = await syncProjectChunkEmbeddings({ scope, provider: createEmbeddingProvider() });
+    console.log(`  embedded chunks             : ${embedding.embeddedChunkCount} (removed orphans: ${embedding.removedEmbeddingCount})`);
+  } catch (error) {
+    console.error(`  embedding FAILED            : ${error instanceof Error ? error.message : error}`);
+    console.error("                                Lexical search is repaired; re-run to retry embeddings.");
+    return false;
+  }
+  return true;
 }
 
 async function main() {
@@ -125,7 +135,17 @@ async function main() {
     `Repairing ${projects.length} project(s). Embedding runs locally at roughly 400ms per chunk, `
     + `so a few thousand chunks can take several minutes.`,
   );
-  for (const project of projects) await repairProject(project);
+  let failed = 0;
+  for (const project of projects) {
+    if (!await repairProject(project)) failed += 1;
+  }
+  if (failed) {
+    // Non-zero so a scripted repair does not report success while some projects are
+    // still missing their vectors.
+    console.error(`\nDone, but ${failed} of ${projects.length} project(s) could not finish embedding.`);
+    process.exitCode = 1;
+    return;
+  }
   console.log("\nDone. Retrieval should now see the full indexed corpus.");
 }
 

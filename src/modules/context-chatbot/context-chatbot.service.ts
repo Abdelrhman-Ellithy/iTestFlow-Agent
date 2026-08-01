@@ -51,8 +51,10 @@ function buildExchangeScorer(): ExchangeScorer | undefined {
  * sent — see selectEvidenceWithinBudget. Sized to comfortably cover a whole compiled
  * knowledge base (~213 entries on a real project) without unbounded fetching.
  */
-const CONTEXT_CANDIDATE_LIMIT = 40;
-const KNOWLEDGE_CANDIDATE_LIMIT = 120;
+export const CONTEXT_CANDIDATE_LIMIT = 40;
+export const KNOWLEDGE_CANDIDATE_LIMIT = 120;
+/** Chunks one work item may contribute, so a single long item cannot fill the evidence. */
+export const MAX_CONTEXT_CHUNKS_PER_WORK_ITEM = 2;
 
 export async function answerContextChatbot(input: {
   scope: ProjectScope;
@@ -95,7 +97,7 @@ export async function answerContextChatbot(input: {
     query: question,
     contextLimit: CONTEXT_CANDIDATE_LIMIT,
     knowledgeLimit: KNOWLEDGE_CANDIDATE_LIMIT,
-    maxContextChunksPerWorkItem: 2,
+    maxContextChunksPerWorkItem: MAX_CONTEXT_CHUNKS_PER_WORK_ITEM,
     selectedWorkItemIds: input.selectedWorkItemIds,
     // Follow-ups ("what about the rejected one?") mean nothing on their own. Retrieval
     // previously got them verbatim while only the prompt saw the conversation, so the

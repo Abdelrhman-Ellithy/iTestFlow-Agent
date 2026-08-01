@@ -16,7 +16,7 @@ const RequestSchema = z.object({
 type RouteParams = { params: Promise<{ caseId: string }> };
 
 export async function POST(request: Request, { params }: RouteParams) {
-  const parsed = RequestSchema.safeParse(await request.json());
+  const parsed = RequestSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) {
     return NextResponse.json({ error: "A valid benchmark label is required." }, { status: 400 });
   }

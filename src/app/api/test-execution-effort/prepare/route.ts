@@ -40,6 +40,8 @@ export async function POST(request: Request) {
       storyId: parsed.data.storyId,
       selectedContextIds: parsed.data.selectedContextIds,
       retrievalTopK: await resolveRetrievalTopK({ workspaceId: ctx.workspace.id, query: "" }),
+      // This route returns a preview, not a prompt, so the ranking would be discarded.
+      skipKnowledgeRanking: true,
     });
     const preview = buildTestExecutionEffortPreview({
       targetRequirement: data.targetRequirement,

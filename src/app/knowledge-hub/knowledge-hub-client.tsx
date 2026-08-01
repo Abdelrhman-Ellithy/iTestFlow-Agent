@@ -1821,7 +1821,7 @@ export function KnowledgeOpsPanel({
   )
 }
 
-function KnowledgeBenchmarkRow({
+export function KnowledgeBenchmarkRow({
   item,
   saving,
   onLabel,

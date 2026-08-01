@@ -15,6 +15,13 @@ export async function loadTestExecutionEffortData(input: {
   storyId: string;
   selectedContextIds?: string[];
   retrievalTopK: number;
+  /**
+   * Skips the knowledge ranking (a vector search plus an ontology build) for callers that
+   * do not build a prompt. Defaults to ranking: a caller that silently gets keyword-only
+   * selection because someone forgot to opt in is the more expensive mistake — that is
+   * exactly how the external-prompt path came to diverge from the internal one.
+   */
+  skipKnowledgeRanking?: boolean;
 }) {
   const scope = assertProjectScope(input.scope);
   const targetRequirement = await input.adapter.fetchWorkItemById({
@@ -50,15 +57,17 @@ export async function loadTestExecutionEffortData(input: {
   const projectKnowledge = await loadProjectKnowledgeContext({ scope, consumer: "test_execution_effort" });
   // Selects the compiled knowledge this work item is actually connected to, by
   // similarity and by the project's own module/provenance/dependency graph.
-  const rankedKnowledgeKeys = await rankProjectKnowledgeForWorkItem({
-    scope,
-    targetRequirement,
-    projectKnowledgeBase: projectKnowledge.knowledgeBase,
-    contextWorkItemIds: [
-      ...context.relatedWorkItems.map((item) => item.workItemId),
-      ...context.selectedContext.map((item) => item.workItemId),
-    ],
-  });
+  const rankedKnowledgeKeys = input.skipKnowledgeRanking
+    ? null
+    : await rankProjectKnowledgeForWorkItem({
+      scope,
+      targetRequirement,
+      projectKnowledgeBase: projectKnowledge.knowledgeBase,
+      contextWorkItemIds: [
+        ...context.relatedWorkItems.map((item) => item.workItemId),
+        ...context.selectedContext.map((item) => item.workItemId),
+      ],
+    });
 
   return {
     targetRequirement,
