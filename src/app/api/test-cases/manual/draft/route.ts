@@ -12,6 +12,7 @@ import { TestDesignOptionsRequestSchema } from "@/modules/test-case-design/test-
 import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
 import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { rankProjectKnowledgeForWorkItem } from "@/modules/rag/knowledge-relevance.service";
 import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
@@ -66,7 +67,20 @@ export async function POST(request: Request) {
     // production, silently. There is no LLM provider here, so the window comes from the
     // workspace override: the admin's own statement of what their models accept.
     const workspaceSettings = await getWorkspaceSettings(ctx.workspace.id);
+    // Same selection the internal run performs. Without it the prepared prompt differed
+    // in *which* knowledge entries it carried, not merely their order — a silent
+    // divergence for the same work item.
+    const rankedKnowledgeKeys = await rankProjectKnowledgeForWorkItem({
+      scope: trustedScope,
+      targetRequirement,
+      projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      contextWorkItemIds: [
+        ...autoContext.relatedWorkItems.map((item) => item.workItemId),
+        ...autoContext.selectedContext.map((item) => item.workItemId),
+      ],
+    });
     const draft = buildTestCaseGenerationPromptDraft({
+      rankedKnowledgeKeys: rankedKnowledgeKeys ?? undefined,
       maxInputTokens: workspaceSettings?.modelInputTokenLimitOverride ?? undefined,
       relatedWorkItemsFloor: autoContext.retrievalTopK,
       scope: trustedScope,

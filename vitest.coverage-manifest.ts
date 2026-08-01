@@ -110,6 +110,7 @@ export const GATED_INCLUDE: string[] = [
   "src/app/api/context/knowledge/jobs/[jobId]/route.ts",
   "src/app/api/context/knowledge/jobs/route.ts",
   "src/app/api/context/knowledge/promote/route.ts",
+  "src/app/api/requirement-analysis/run/route.ts",
   "src/app/api/test-suite-migration/execute/route.ts",
   "src/app/api/workspace/capabilities/route.ts",
   "src/app/api/workspace/members/[membershipId]/route.ts",

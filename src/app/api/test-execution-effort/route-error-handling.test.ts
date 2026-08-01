@@ -48,6 +48,7 @@ vi.mock("@/modules/test-execution-effort/test-execution-effort.service", async (
 });
 
 import { azureDevOpsIntegrationError } from "@/modules/integrations/azure-devops/azure-devops-error";
+import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import { fakeAzureAdapter, jsonRequest, projectScope } from "@/test/factories";
 import { POST as externalPromptPost } from "./external-prompt/route";
 import { POST as preparePost } from "./prepare/route";
@@ -114,6 +115,33 @@ describe("test-execution-effort route integration errors", () => {
 
     expect(response.status).toBe(401);
     expect(response.headers.get("x-itf-error-scope")).toBe("integration");
+  });
+
+  it("records a failure audit for generate even on an AppError", async () => {
+    // The audit write sits before the AppError/non-AppError branch, so it needed a case
+    // that actually exercises that branch to prove it still runs on both paths.
+    mocks.loadTestExecutionEffortData.mockRejectedValue(new AppError({
+      code: AppErrorCode.KnowledgeDraftConflict,
+      message: "conflict",
+      userMessage: "A conflicting change was made.",
+    }));
+
+    const response = await generatePost(jsonRequest("/api/test-execution-effort/generate", body()));
+
+    expect(response.status).toBeGreaterThanOrEqual(400);
+    expect(response.status).toBeLessThan(500);
+    expect(mocks.failWorkflowRun).toHaveBeenCalled();
+  });
+
+  it("maps a non-AppError failure through the safe-error fallback, distinct from AppError handling", async () => {
+    // The two branches build their response differently (toErrorResponse vs a hand-built
+    // safe error), so a plain Error and an AppError need separate coverage to guard both.
+    mocks.loadTestExecutionEffortData.mockRejectedValue(new Error("unexpected failure"));
+
+    const response = await generatePost(jsonRequest("/api/test-execution-effort/generate", body()));
+
+    expect(response.status).toBeGreaterThanOrEqual(500);
+    expect(mocks.failWorkflowRun).toHaveBeenCalled();
   });
 });
 

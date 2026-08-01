@@ -48,7 +48,6 @@
     "src/app/api/requirement-analysis/comment/route.ts",
     "src/app/api/requirement-analysis/manual/draft/route.ts",
     "src/app/api/requirement-analysis/manual/submit/route.ts",
-    "src/app/api/requirement-analysis/run/route.ts",
     "src/app/api/settings/credentials/route.ts",
     "src/app/api/settings/llm-models/route.ts",
     "src/app/api/test-cases/generate/route.ts",
