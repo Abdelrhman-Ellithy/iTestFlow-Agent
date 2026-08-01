@@ -4,11 +4,6 @@
  * to keep request payloads sane, not to shape what the model sees.
  */
 export const CONTEXT_CHATBOT_HISTORY_REQUEST_LIMIT = 100;
-/**
- * Recency-only fallback used when no relevance scorer is available. With a scorer, the
- * prompt-side selection is governed by relevance and the token budget instead.
- */
-export const CONTEXT_CHATBOT_PROMPT_HISTORY_LIMIT = 8;
 /** Share of the model's input budget the conversation may occupy, so memory cannot crowd out evidence. */
 export const CONTEXT_CHATBOT_HISTORY_BUDGET_SHARE = 0.25;
 export const CONTEXT_CHATBOT_HISTORY_CONTENT_LIMIT = 1200;

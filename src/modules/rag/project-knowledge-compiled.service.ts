@@ -21,7 +21,7 @@ import {
   type ProjectKnowledgeSourceManifestEntry,
 } from "./project-knowledge-contracts";
 import { listProjectKnowledgeBenchmarkCases } from "./project-knowledge-benchmark.service";
-import { indexApprovedChatInsight } from "./context-chatbot-retrieval.service";
+import { indexApprovedChatInsight, removeChatInsightFromSearchIndex } from "./context-chatbot-retrieval.service";
 import { createEmbeddingProvider } from "./embedding-provider";
 import { syncProjectKnowledgeEntryEmbeddings } from "./embedding-store.service";
 import { addNameSimilarityIssues } from "./project-knowledge-lint-similarity";
@@ -1160,6 +1160,11 @@ export async function getProjectKnowledgeCandidate(input: { scope: ProjectScope;
   return row ? toKnowledgeCandidate(row) : null;
 }
 
+/** Identity of an indexed insight: its content, so duplicate approvals collapse to one entry. */
+function chatInsightEntryKey(content: string) {
+  return `chat-insight-${stableHash(content).slice(0, 12)}`;
+}
+
 export async function rejectProjectKnowledgeCandidate(input: {
   scope: ProjectScope;
   candidateId: string;
@@ -1168,23 +1173,47 @@ export async function rejectProjectKnowledgeCandidate(input: {
 }) {
   const scope = assertProjectScope(input.scope);
   const now = nowIso();
-  const updated = await sqlRun(
-    `
-      UPDATE project_knowledge_candidates
-      SET status = 'rejected', rejected_by = @actor, rejected_reason = @reason,
-          rejected_at = @now, updated_at = @now
-      WHERE id = @candidateId AND project_id = @projectId AND azure_project_id = @azureProjectId
-        AND status <> 'rejected'
-    `,
-    {
-      candidateId: input.candidateId,
-      projectId: scope.projectId,
-      azureProjectId: scope.azureProjectId,
-      actor: input.actor,
-      reason: input.reason.trim().slice(0, 1000),
-      now,
-    },
-  );
+  const before = await getProjectKnowledgeCandidate({ scope, candidateId: input.candidateId });
+  let updated = 0;
+  // Status and index move together: rejecting an integrated insight has to stop it being
+  // answerable, or an admin's rejection is cosmetic while the content keeps appearing in
+  // answers indefinitely.
+  await withTransaction(async (client) => {
+    updated = await sqlRun(
+      `
+        UPDATE project_knowledge_candidates
+        SET status = 'rejected', rejected_by = @actor, rejected_reason = @reason,
+            rejected_at = @now, updated_at = @now
+        WHERE id = @candidateId AND project_id = @projectId AND azure_project_id = @azureProjectId
+          AND status <> 'rejected'
+      `,
+      {
+        candidateId: input.candidateId,
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        actor: input.actor,
+        reason: input.reason.trim().slice(0, 1000),
+        now,
+      },
+      client,
+    );
+    if (!updated || before?.status !== "integrated") return;
+
+    // Entries are keyed by content, so another integrated candidate may still legitimately
+    // claim this exact answer. Un-publishing then would revoke a decision nobody reversed.
+    const entryKey = chatInsightEntryKey(before.content);
+    const siblings = await sqlAll<{ content: string }>(
+      `
+        SELECT content FROM project_knowledge_candidates
+        WHERE project_id = @projectId AND azure_project_id = @azureProjectId
+          AND status = 'integrated' AND id <> @candidateId
+      `,
+      { projectId: scope.projectId, azureProjectId: scope.azureProjectId, candidateId: input.candidateId },
+      client,
+    );
+    if (siblings.some((row) => chatInsightEntryKey(row.content) === entryKey)) return;
+    await removeChatInsightFromSearchIndex({ scope, entryKey }, client);
+  });
   if (!updated) {
     const existing = await getProjectKnowledgeCandidate({ scope, candidateId: input.candidateId });
     if (!existing) throw resourceNotFound("Project knowledge candidate");
@@ -1233,12 +1262,15 @@ export async function integrateProjectKnowledgeCandidate(input: {
   // be re-indexed on every retry, and a status recorded without the entry would claim
   // the knowledge is in use when retrieval cannot see it.
   await withTransaction(async (client) => {
-    await sqlRun(
+    // Conditional, not a blind write: a reject landing between the read above and this
+    // update must win, or integration would silently resurrect rejected content.
+    const claimed = await sqlRun(
       `
         UPDATE project_knowledge_candidates
         SET status = 'integrated', integration_requested_by = @actor,
             integration_requested_at = @now, updated_at = @now
         WHERE id = @candidateId AND project_id = @projectId AND azure_project_id = @azureProjectId
+          AND status <> 'rejected'
       `,
       {
         candidateId: input.candidateId,
@@ -1249,13 +1281,20 @@ export async function integrateProjectKnowledgeCandidate(input: {
       },
       client,
     );
+    if (!claimed) {
+      throw new AppError({
+        code: AppErrorCode.KnowledgeDraftConflict,
+        message: "The candidate was rejected before integration completed.",
+        userMessage: "This candidate was rejected. Reopen it before integrating.",
+      });
+    }
     await indexApprovedChatInsight(
       {
         scope,
         candidateId: input.candidateId,
         // Same derivation promoteContextChatbotAnswer uses for its own entryKey, so two
         // saves of one answer resolve to a single indexed insight.
-        entryKey: `chat-insight-${stableHash(candidate.content).slice(0, 12)}`,
+        entryKey: chatInsightEntryKey(candidate.content),
         title: candidate.title,
         content: candidate.content,
         sourceWorkItemIds: candidate.sourceWorkItemIds.filter(

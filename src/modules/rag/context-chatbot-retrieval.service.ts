@@ -298,6 +298,42 @@ export async function indexApprovedChatInsight(
   return { entryId: id };
 }
 
+/**
+ * Removes an approved insight from the search index, so rejecting it actually stops it
+ * being answerable.
+ *
+ * Entries are keyed by content, which means two candidates carrying the same answer share
+ * one entry. The caller must therefore only invoke this once no *other* integrated
+ * candidate still claims that content — otherwise rejecting one duplicate would silently
+ * un-publish another admin's still-approved insight.
+ */
+export async function removeChatInsightFromSearchIndex(
+  input: { scope: ProjectScope; entryKey: string },
+  client?: PoolClient,
+) {
+  const scope = assertProjectScope(input.scope);
+  let removed = 0;
+  for (const table of ["project_knowledge_entries_fts", "project_knowledge_entries"] as const) {
+    removed = await sqlRun(
+      `
+        DELETE FROM ${table}
+        WHERE project_id = @projectId
+          AND azure_project_id = @azureProjectId
+          AND category = @category
+          AND entry_key = @entryKey
+      `,
+      {
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        category: CHAT_INSIGHT_CATEGORY,
+        entryKey: input.entryKey,
+      },
+      client,
+    );
+  }
+  return { removed };
+}
+
 export async function refreshProjectKnowledgeSearchIndex(
   input: {
     scope: ProjectScope;

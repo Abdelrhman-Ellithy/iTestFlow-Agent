@@ -6,7 +6,6 @@ import { assertProjectScope, type ProjectScope } from "@/modules/projects/projec
 import {
   CONTEXT_CHATBOT_HISTORY_BUDGET_SHARE,
   CONTEXT_CHATBOT_HISTORY_CONTENT_LIMIT,
-  CONTEXT_CHATBOT_PROMPT_HISTORY_LIMIT,
   type ContextChatbotHistoryMessage,
 } from "@/modules/context-chatbot/context-chatbot-history";
 import { FALLBACK_MAX_INPUT_TOKENS, selectEvidenceWithinBudget } from "@/modules/context-chatbot/evidence-budget";
@@ -238,17 +237,29 @@ function buildUserPrompt(input: {
   ].join("\n");
 }
 
+/**
+ * Renders history that `selectRelevantHistory` has already chosen within a token budget.
+ *
+ * Deliberately does NOT re-truncate to the most recent N. That slice used to live here,
+ * from when history was a pure recency window, and it silently defeated the whole point
+ * of relevance-based selection: recovered exchanges are older than the always-kept recent
+ * ones, so they sort first and a trailing slice removes exactly them — the correction or
+ * constraint the selector went out of its way to keep would be the first thing dropped.
+ * The budget is the authority on how much history is affordable; this only formats it.
+ *
+ * The per-message cap stays: it bounds one pathological message, and truncating a message
+ * can only spend less than the budget already allowed for it.
+ */
 function renderHistory(history: ContextChatbotHistoryMessage[]) {
-  const recent = history
-    .slice(-CONTEXT_CHATBOT_PROMPT_HISTORY_LIMIT)
+  const rendered = history
     .map((message) => ({
       role: message.role,
       content: message.content.trim().slice(0, CONTEXT_CHATBOT_HISTORY_CONTENT_LIMIT),
     }))
     .filter((message) => message.content);
 
-  if (!recent.length) return "No prior chat history in this session.";
-  return recent.map((message) => `- ${message.role}: ${message.content}`).join("\n");
+  if (!rendered.length) return "No prior chat history in this session.";
+  return rendered.map((message) => `- ${message.role}: ${message.content}`).join("\n");
 }
 
 function renderContextItem(item: ContextChatbotContextEvidence) {

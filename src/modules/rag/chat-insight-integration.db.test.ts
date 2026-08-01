@@ -8,6 +8,7 @@ import {
 import {
   integrateProjectKnowledgeCandidate,
   promoteContextChatbotAnswer,
+  rejectProjectKnowledgeCandidate,
 } from "@/modules/rag/project-knowledge-compiled.service";
 import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
@@ -54,11 +55,16 @@ function compiledKnowledge(): ProjectKnowledgeBase {
   });
 }
 
-async function savedAnswer() {
+/**
+ * Entries are keyed by content, so tests that must not interfere have to use distinct
+ * answers — otherwise one test's integrated candidate legitimately keeps another test's
+ * entry alive, and the isolation failure looks like a product bug.
+ */
+async function savedAnswer(answer: string = INSIGHT) {
   return promoteContextChatbotAnswer({
     scope,
     actor: "admin-1",
-    answer: INSIGHT,
+    answer,
     citations: [{ sourceType: "project_context", sourceId: "WI:8001", workItemId: "8001" }],
   });
 }
@@ -187,5 +193,67 @@ describeDb("saved chatbot answers reach retrieval (DB-backed)", () => {
 
     expect(insight?.category).toBe("chat_insight");
     expect(insight?.evidence).toContain("Approved from a Business Owner Assistant answer");
+  });
+
+  it("rejecting an integrated insight stops it being answerable", async () => {
+    // Rejection was cosmetic: it flipped the status but left the indexed rows in place,
+    // so content an admin explicitly rejected kept coming back as evidence forever.
+    const answer = "Chargeback disputes older than ninety days route to the arbitration desk.";
+    const candidate = await savedAnswer(answer);
+    await integrateProjectKnowledgeCandidate({ scope, candidateId: candidate.candidateId, actor: "admin-1" });
+
+    const before = await retrieveContextChatbotEvidence({
+      scope, query: "chargeback disputes arbitration desk",
+      embeddingProvider: null, rerankProvider: null,
+    });
+    expect(before.knowledge.map((item) => item.content)).toContain(answer);
+
+    await rejectProjectKnowledgeCandidate({
+      scope, candidateId: candidate.candidateId, actor: "admin-1", reason: "wrong",
+    });
+
+    const after = await retrieveContextChatbotEvidence({
+      scope, query: "chargeback disputes arbitration desk",
+      embeddingProvider: null, rerankProvider: null,
+    });
+    expect(after.knowledge.map((item) => item.content)).not.toContain(answer);
+  });
+
+  it("rejecting one duplicate does not un-publish an identical still-integrated insight", async () => {
+    // Entries are keyed by content, so two candidates carrying the same answer share one
+    // entry. Deleting on the first rejection would revoke a decision nobody reversed.
+    const answer = "Partial refunds under the minimum threshold are auto-approved overnight.";
+    const first = await savedAnswer(answer);
+    const second = await savedAnswer(answer);
+    await integrateProjectKnowledgeCandidate({ scope, candidateId: first.candidateId, actor: "admin-1" });
+    await integrateProjectKnowledgeCandidate({ scope, candidateId: second.candidateId, actor: "admin-2" });
+
+    await rejectProjectKnowledgeCandidate({
+      scope, candidateId: first.candidateId, actor: "admin-1", reason: "duplicate",
+    });
+
+    const evidence = await retrieveContextChatbotEvidence({
+      scope, query: "partial refunds minimum threshold auto approved",
+      embeddingProvider: null, rerankProvider: null,
+    });
+    expect(evidence.knowledge.map((item) => item.content)).toContain(answer);
+  });
+
+  it("refuses to integrate a candidate that was rejected", async () => {
+    const answer = "Vendor onboarding requires a signed data-processing agreement first.";
+    const candidate = await savedAnswer(answer);
+    await rejectProjectKnowledgeCandidate({
+      scope, candidateId: candidate.candidateId, actor: "admin-1", reason: "not useful",
+    });
+
+    await expect(integrateProjectKnowledgeCandidate({
+      scope, candidateId: candidate.candidateId, actor: "admin-2",
+    })).rejects.toThrow(/rejected/i);
+
+    const evidence = await retrieveContextChatbotEvidence({
+      scope, query: "vendor onboarding data processing agreement",
+      embeddingProvider: null, rerankProvider: null,
+    });
+    expect(evidence.knowledge.map((item) => item.content)).not.toContain(answer);
   });
 });
