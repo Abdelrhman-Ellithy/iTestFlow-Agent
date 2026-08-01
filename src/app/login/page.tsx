@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import Image from "next/image"
 import { useRouter } from "next/navigation"
 import {
@@ -10,11 +10,14 @@ import {
   Eye,
   EyeOff,
   Info,
+  Loader2,
   LockKeyhole,
+  RefreshCw,
 } from "lucide-react"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
+import { Callout } from "@/components/qa/callout"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -27,12 +30,18 @@ import {
 } from "@/components/ui/select"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { resolveLoginDestination } from "@/app/login/login-destination"
-import { apiErrorMessage } from "@/shared/lib/api-error-message"
+import { apiErrorMessage, caughtErrorMessage } from "@/shared/lib/api-error-message"
 
 type OrganizationOption = {
   name: string
   azureOrgName: string
   azureOrgUrl: string
+}
+
+type OrganizationLoadState = "loading" | "ready" | "error"
+
+type OrganizationListResponse = {
+  organizations?: OrganizationOption[]
 }
 
 const azurePatHelpUrl =
@@ -147,33 +156,52 @@ export default function LoginPage() {
   const [submitting, setSubmitting] = useState(false)
   const [showPersonalAccessToken, setShowPersonalAccessToken] = useState(false)
   const [organizations, setOrganizations] = useState<OrganizationOption[]>([])
-  const [orgsLoading, setOrgsLoading] = useState(true)
-  // When the org list can't be loaded (fetch error) or is empty (fresh deploy
-  // before bootstrap), fall back to a free-text field so sign-in is never blocked.
-  const [orgsFallback, setOrgsFallback] = useState(false)
+  const [organizationLoadState, setOrganizationLoadState] = useState<OrganizationLoadState>("loading")
+  const [organizationLoadError, setOrganizationLoadError] = useState("")
 
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const response = await fetch("/api/auth/organizations", { cache: "no-store" })
-        const data = (await response.json().catch(() => ({}))) as { organizations?: OrganizationOption[] }
-        if (cancelled) return
-        const list = response.ok && Array.isArray(data.organizations) ? data.organizations : []
-        setOrganizations(list)
-        setOrgsFallback(list.length === 0)
-        // Preselect when the deployment enables exactly one org.
-        if (list.length === 1) setOrganization(list[0].azureOrgUrl)
-      } catch {
-        if (!cancelled) setOrgsFallback(true)
-      } finally {
-        if (!cancelled) setOrgsLoading(false)
+  const loadOrganizations = useCallback(async (signal?: AbortSignal) => {
+    setOrganizationLoadState("loading")
+    setOrganizationLoadError("")
+    setOrganizations([])
+    setOrganization("")
+
+    try {
+      const response = await fetch("/api/auth/organizations", { cache: "no-store", signal })
+      const data = (await response.json().catch(() => null)) as OrganizationListResponse | null
+      if (signal?.aborted) return
+
+      if (!response.ok) {
+        throw new Error(apiErrorMessage(data, "Unable to load configured organizations."))
       }
-    })()
-    return () => {
-      cancelled = true
+      if (!Array.isArray(data?.organizations)) {
+        throw new Error("Unable to load configured organizations.")
+      }
+
+      const list = data.organizations
+      setOrganizations(list)
+      // Submit the canonical URL while showing the friendly workspace name for a
+      // single configured organization.
+      setOrganization(list.length === 1 ? list[0].azureOrgUrl : "")
+      setOrganizationLoadState("ready")
+    } catch (error) {
+      if (signal?.aborted) return
+      setOrganizationLoadError(caughtErrorMessage(error, "Unable to load configured organizations."))
+      setOrganizationLoadState("error")
     }
   }, [])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void loadOrganizations(controller.signal)
+    return () => {
+      controller.abort()
+    }
+  }, [loadOrganizations])
+
+  const singleOrganization =
+    organizationLoadState === "ready" && organizations.length === 1 ? organizations[0] : null
+  const signInDisabled =
+    submitting || organizationLoadState !== "ready" || organizations.length === 0 || !organization.trim()
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -225,8 +253,56 @@ export default function LoginPage() {
           <CardContent className="px-5 sm:px-8">
             <form className="space-y-5" onSubmit={onSubmit}>
               <div className="space-y-2">
-                <Label htmlFor="organization">Azure DevOps organization</Label>
-                {orgsFallback ? (
+                {organizationLoadState === "loading" || organizationLoadState === "error" || organizations.length === 0 ? (
+                  <p className="text-sm font-medium leading-none">Azure DevOps organization</p>
+                ) : (
+                  <Label htmlFor="organization">Azure DevOps organization</Label>
+                )}
+                {organizationLoadState === "loading" ? (
+                  <>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <div
+                        className="flex h-10 min-w-0 flex-1 items-center gap-3 rounded-lg border border-input bg-muted/30 px-3 text-sm text-muted-foreground"
+                        role="status"
+                        aria-live="polite"
+                        aria-atomic="true"
+                      >
+                        <Loader2
+                          className="size-4 shrink-0 animate-spin text-primary motion-reduce:animate-none"
+                          aria-hidden="true"
+                        />
+                        <span>Loading configured organizations…</span>
+                      </div>
+                      <OrganizationConfigurationHelp />
+                    </div>
+                    <p className="text-xs leading-5 text-muted-foreground">
+                      Checking this deployment&apos;s organization configuration.
+                    </p>
+                  </>
+                ) : organizationLoadState === "error" ? (
+                  <Callout
+                    tone="error"
+                    role="alert"
+                    title="Unable to load organizations."
+                    action={
+                      <Button type="button" variant="outline" size="sm" onClick={() => void loadOrganizations()}>
+                        <RefreshCw className="size-3.5" aria-hidden="true" />
+                        Retry
+                      </Button>
+                    }
+                  >
+                    {organizationLoadError}
+                  </Callout>
+                ) : organizations.length === 0 ? (
+                  <Callout
+                    tone="warning"
+                    role="status"
+                    title="No Azure DevOps organization is configured."
+                    action={<OrganizationConfigurationHelp />}
+                  >
+                    Ask your iTestFlow administrator to configure <code>BOOTSTRAP_AZURE_ORGS</code> and restart iTestFlow.
+                  </Callout>
+                ) : singleOrganization ? (
                   <>
                     <div className="flex min-w-0 items-center gap-2">
                       <div className="relative min-w-0 flex-1">
@@ -236,22 +312,16 @@ export default function LoginPage() {
                         />
                         <Input
                           id="organization"
-                          className="h-10 bg-background/80 pl-11 pr-3 placeholder:text-[13px] sm:placeholder:text-sm"
-                          placeholder="contoso or https://dev.azure.com/contoso"
-                          value={organization}
-                          onChange={(event) => setOrganization(event.target.value)}
-                          autoCapitalize="none"
-                          autoComplete="organization"
-                          autoCorrect="off"
-                          spellCheck={false}
+                          className="h-10 bg-muted/30 pl-11 pr-3 text-foreground"
+                          value={singleOrganization.name}
+                          readOnly
                           aria-describedby="organization-help"
-                          required
                         />
                       </div>
                       <OrganizationConfigurationHelp />
                     </div>
                     <p id="organization-help" className="text-xs leading-5 text-muted-foreground">
-                      Enter your organization name or full Azure DevOps URL.
+                      This is the only organization configured for this deployment.
                     </p>
                   </>
                 ) : (
@@ -265,16 +335,14 @@ export default function LoginPage() {
                         <Select
                           value={organization}
                           onValueChange={setOrganization}
-                          disabled={orgsLoading || submitting}
+                          disabled={submitting}
                         >
                           <SelectTrigger
                             id="organization"
                             className="h-10 w-full bg-background/80 pl-11 pr-3"
                             aria-describedby="organization-help"
                           >
-                            <SelectValue
-                              placeholder={orgsLoading ? "Loading organizations…" : "Select your organization"}
-                            />
+                            <SelectValue placeholder="Select your organization" />
                           </SelectTrigger>
                           <SelectContent>
                             {organizations.map((org) => (
@@ -342,7 +410,7 @@ export default function LoginPage() {
               </div>
 
               <div className="pt-1">
-                <Button type="submit" size="lg" className="h-10 w-full font-semibold" disabled={submitting}>
+                <Button type="submit" size="lg" className="h-10 w-full font-semibold" disabled={signInDisabled}>
                   {submitting ? "Signing in..." : "Sign In"}
                 </Button>
               </div>
