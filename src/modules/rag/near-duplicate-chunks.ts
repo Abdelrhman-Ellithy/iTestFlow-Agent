@@ -25,15 +25,18 @@ const DEFAULT_JACCARD_THRESHOLD = 0.7;
  * Splits text into word k-shingles (k=MIN_SHINGLE_LENGTH).
  *
  * Words are lowercased and normalized. Punctuation is stripped via a loose
- * non-alphanumeric boundary: "don't" → ["don", "t"], "test_case" → ["test", "case"].
- * Short shingles are noise; a 2-word window catches templated structures like
- * "Required Action: ..." while still needing multiple matching bigrams to call
- * something a duplicate.
+ * non-word boundary: "don't" → ["don", "t"], "test_case" → ["test", "case"]. The
+ * boundary is Unicode-property-based (\p{L}\p{N}), not an ASCII a-z0-9 range — an
+ * ASCII-only boundary strips every character of a non-Latin script (Arabic, Chinese,
+ * Cyrillic, ...) as "punctuation," leaving an empty word list for any chunk in one of
+ * those scripts regardless of its actual content. Short shingles are noise; a 2-word
+ * window catches templated structures like "Required Action: ..." while still needing
+ * multiple matching bigrams to call something a duplicate.
  */
 export function shingleSet(text: string, k: number = MIN_SHINGLE_LENGTH): Set<string> {
   const words = text
     .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim()
     .split(/\s+/)
     .filter((w) => w.length > 0);
@@ -51,9 +54,18 @@ export function shingleSet(text: string, k: number = MIN_SHINGLE_LENGTH): Set<st
 
 /**
  * Jaccard similarity between two sets: |A ∩ B| / |A ∪ B|.
+ *
+ * Two empty sets return 0, not 1: a set is empty when its text produced no shingles
+ * (too short to form one, or entirely stripped by shingleSet's normalization), and
+ * "we couldn't measure this text" must never read as "these are identical." Returning
+ * 1 here previously made dedup collapse any two untokenizable chunks together
+ * regardless of their actual content — the failure mode that hit every non-Latin-script
+ * chunk before shingleSet became Unicode-aware, and would still hit e.g. two
+ * emoji-only or two whitespace-only chunks otherwise. The asymmetric cost is
+ * deliberate: occasionally keeping two genuinely-duplicate-but-untokenizable chunks
+ * is a token-budget nuisance; silently dropping a distinct one is a lost source.
  */
 export function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 1.0;
   if (a.size === 0 || b.size === 0) return 0.0;
   const intersection = [...a].filter((x) => b.has(x)).length;
   const union = new Set([...a, ...b]).size;

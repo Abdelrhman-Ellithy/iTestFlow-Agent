@@ -42,10 +42,43 @@ describe("jaccardSimilarity", () => {
   });
 
   it("handles empty sets", () => {
+    // Two empty sets are two texts we could not tokenize at all -- not evidence they
+    // are the same text. Treating them as identical is what let two unrelated but
+    // untokenizable chunks (e.g. non-Latin script, before shingleSet's Unicode fix)
+    // collapse into "duplicates" regardless of content.
     const empty = new Set<string>();
     const filled = new Set(["a"]);
-    expect(jaccardSimilarity(empty, empty)).toBe(1);
+    expect(jaccardSimilarity(empty, empty)).toBe(0);
     expect(jaccardSimilarity(empty, filled)).toBe(0);
+  });
+});
+
+describe("non-Latin script text", () => {
+  it("shingles Arabic text instead of stripping it to nothing", () => {
+    // An ASCII-only a-z0-9 boundary treats every Arabic letter as punctuation,
+    // leaving no words at all -- this must produce real shingles, not an empty set.
+    const shingles = shingleSet("يجب أن يوافق المالك على التغيير قبل النشر");
+    expect(shingles.size).toBeGreaterThan(0);
+  });
+
+  it("does not treat two unrelated Arabic chunks as near-duplicates", () => {
+    // Both texts previously shingled to an empty set, and jaccardSimilarity special-cased
+    // empty/empty as similarity 1 -- so any two chunks in a non-Latin script looked like
+    // 100% duplicates of each other no matter what they actually said.
+    const refundPolicy = shingleSet("يجب أن يوافق المالك على التغيير قبل النشر");
+    const shippingPolicy = shingleSet("يتم شحن الطلبات خلال ثلاثة أيام عمل من التأكيد");
+    expect(jaccardSimilarity(refundPolicy, shippingPolicy)).toBeLessThan(0.7);
+  });
+
+  it("dedupeNearDuplicateChunks keeps distinct Arabic entries and drops a genuine repeat", () => {
+    const entries: DedupeEntry<string>[] = [
+      { item: "approval-rule", text: "يجب أن يوافق المالك على التغيير قبل النشر" },
+      { item: "approval-rule-restated", text: "يجب أن يوافق المالك على التغيير قبل النشر" },
+      { item: "shipping-rule", text: "يتم شحن الطلبات خلال ثلاثة أيام عمل من التأكيد" },
+    ];
+    const deduped = dedupeNearDuplicateChunks(entries, 0.7);
+
+    expect(deduped.map((e) => e.item)).toEqual(["approval-rule", "shipping-rule"]);
   });
 });
 
