@@ -51,6 +51,7 @@ const CATEGORY_BY_STORED_NAME: Record<string, OntologyCategory> = {
   state_transition: "stateTransitions",
   glossary: "glossary",
   dependency: "crossDependencies",
+  chat_insight: "chatInsights",
 };
 
 /**

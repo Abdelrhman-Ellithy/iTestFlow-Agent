@@ -144,6 +144,32 @@ export const ProjectKnowledgeCrossDependencySchema = z
 
 type ProjectKnowledgeCrossDependency = z.infer<typeof ProjectKnowledgeCrossDependencySchema>;
 
+/**
+ * An admin-approved synthesis from the Business Owner Assistant, integrated into project
+ * knowledge (see `integrateProjectKnowledgeCandidate`). Deliberately not one of the five
+ * compiler-extracted categories above: those all carry `evidenceRefs` re-anchored to an
+ * immutable snapshot quote, and a chatbot answer is a synthesis across several work items
+ * rather than a quote from any one of them -- it cannot satisfy that guarantee, and
+ * should not be indistinguishable from entries that do.
+ *
+ * Populated at read time in `loadProjectKnowledgeContext`, not by the compiler: chat
+ * insights live in `project_knowledge_entries` (category `chat_insight`), independent of
+ * the compiled snapshot in `project_knowledge_base.validated_output`, specifically so a
+ * knowledge republish (which wipes and rebuilds the compiled snapshot) cannot discard
+ * them. A freshly-compiled `ProjectKnowledgeBase` this schema validates directly (from
+ * the extraction LLM) will never contain one; only the merged copy handed to a workflow
+ * prompt does.
+ */
+export const ProjectKnowledgeChatInsightSchema = z.object({
+  id: RequiredTextSchema,
+  title: RequiredTextSchema,
+  content: RequiredTextSchema,
+  sourceWorkItemIds: SourceIdsSchema,
+  evidence: RequiredTextSchema,
+});
+
+export type ProjectKnowledgeChatInsight = z.infer<typeof ProjectKnowledgeChatInsightSchema>;
+
 export const ProjectKnowledgeBaseSchema = z
   .object({
     modules: z.array(ProjectKnowledgeModuleSchema).default([]),
@@ -151,6 +177,7 @@ export const ProjectKnowledgeBaseSchema = z
     stateTransitions: z.array(ProjectKnowledgeStateTransitionSchema).default([]),
     glossary: z.array(ProjectKnowledgeGlossaryTermSchema).default([]),
     crossDependencies: z.array(ProjectKnowledgeCrossDependencySchema).default([]),
+    chatInsights: z.array(ProjectKnowledgeChatInsightSchema).default([]),
   })
   .transform((knowledgeBase) => ({
     ...knowledgeBase,

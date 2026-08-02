@@ -10,7 +10,9 @@ import {
   promoteContextChatbotAnswer,
   rejectProjectKnowledgeCandidate,
 } from "@/modules/rag/project-knowledge-compiled.service";
+import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { ProjectKnowledgeBaseSchema, type ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema";
+import { buildRequirementAnalysisMarkdownPrompt } from "@/modules/llm/markdown-prompt-renderer";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { cleanupFixtures, describeDb, seedProject, seedWorkspace, uniqueTestId } from "@/test/db";
 
@@ -255,5 +257,65 @@ describeDb("saved chatbot answers reach retrieval (DB-backed)", () => {
       embeddingProvider: null, rerankProvider: null,
     });
     expect(evidence.knowledge.map((item) => item.content)).not.toContain(answer);
+  });
+
+  it("reaches an actual rendered workflow prompt alongside a real compiled snapshot, not just the assistant's own evidence", async () => {
+    // The bug this guards: every workflow prompt builder reads project knowledge from
+    // loadProjectKnowledgeContext, which for four rounds of review only ever returned the
+    // compiler's own compiled snapshot (project_knowledge_base.validated_output) -- a
+    // table integration never touched. An insight could become fully "integrated" and
+    // still be invisible to every Requirement Analysis / Test Design / Test Case Review /
+    // Test Execution Effort prompt for the life of the project. Proving it in the
+    // assistant's own evidence (the tests above) does not prove this; the assistant reads
+    // project_knowledge_entries directly and was never the affected path.
+    //
+    // A real compiled snapshot is seeded here deliberately: every prior test in this file
+    // has no project_knowledge_base row for this scope at all, so loadProjectKnowledgeContext
+    // takes its "nothing compiled yet" branch -- a real project almost always has one, and
+    // that branch merges chatInsights independently of this one.
+    const now = new Date().toISOString();
+    const snapshotId = uniqueTestId("pkb");
+    await sqlRun(
+      `INSERT INTO project_knowledge_base (
+         id, project_id, azure_project_id, azure_project_name, azure_organization_url,
+         prompt_version, provider, model_name, source_work_item_count, raw_output,
+         validated_output, status, extracted_at, created_at, updated_at
+       ) VALUES (
+         @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
+         'original', 'external', 'manual', 1, '{}', @validatedOutput, 'Success', @now, @now, @now
+       )`,
+      {
+        id: snapshotId,
+        projectId: PROJ,
+        azureProjectId: PROJ,
+        azureProjectName: scope.azureProjectName,
+        azureOrganizationUrl: ORG,
+        validatedOutput: JSON.stringify(compiledKnowledge()),
+        now,
+      },
+    );
+
+    const answer = "Escalations older than five business days route automatically to the duty manager.";
+    const candidate = await savedAnswer(answer);
+    await integrateProjectKnowledgeCandidate({ scope, candidateId: candidate.candidateId, actor: "admin-1" });
+
+    const context = await loadProjectKnowledgeContext({ scope });
+    // The compiled entry and the integrated insight must coexist: merging must not
+    // replace one with the other.
+    expect(context.knowledgeBase?.modules.map((m) => m.id)).toContain("billing-module");
+    expect(context.knowledgeBase?.chatInsights.map((insight) => insight.content)).toContain(answer);
+
+    const draft = buildRequirementAnalysisMarkdownPrompt({
+      currentProject: { azureProjectId: scope.azureProjectId, azureProjectName: scope.azureProjectName },
+      targetRequirement: { id: "9001", title: "Escalation handling" },
+      projectKnowledgeBase: context.knowledgeBase,
+      outputContract: {},
+    });
+
+    expect(draft.prompt).toContain(answer);
+    expect(draft.prompt).toContain("Business Owner Assistant");
+    expect(draft.prompt).toContain("Billing");
+
+    await sqlRun(`DELETE FROM project_knowledge_base WHERE id = @id`, { id: snapshotId });
   });
 });

@@ -59,6 +59,7 @@ const emptyKnowledge = {
   stateTransitions: [],
   glossary: [],
   crossDependencies: [],
+  chatInsights: [],
 };
 
 function draftRow(overrides: Record<string, unknown> = {}) {
@@ -149,6 +150,7 @@ describe("draft evidence recovery", () => {
     stateTransitions: [],
     glossary: [],
     crossDependencies: [],
+    chatInsights: [],
   };
   function prepareCompletion(fields: Record<string, unknown>) {
     const row = draftRow({

@@ -43,7 +43,8 @@ export type OntologyCategory =
   | "businessRules"
   | "stateTransitions"
   | "glossary"
-  | "crossDependencies";
+  | "crossDependencies"
+  | "chatInsights";
 
 /** Composite because entry keys are only unique within a category. */
 export function ontologyEntryId(category: OntologyCategory, key: string) {
@@ -147,6 +148,13 @@ export function buildKnowledgeOntology(knowledgeBase: ProjectKnowledgeBase | nul
   for (const term of knowledgeBase.glossary) {
     attach("glossary", term.term, null, term.sourceWorkItemIds);
     if (term.term.trim()) ontology.glossaryTerms.set(ontologyEntryId("glossary", term.term), term.term);
+  }
+  for (const insight of knowledgeBase.chatInsights) {
+    // No module edge: a chat insight is a free-form synthesis, not filed under a module
+    // the way a rule or transition is. Provenance is the connection it has -- the work
+    // items an admin cited when the answer was generated -- which is the strongest
+    // signal this ontology has for anything.
+    attach("chatInsights", insight.id, null, insight.sourceWorkItemIds);
   }
 
   for (const dependency of knowledgeBase.crossDependencies) {

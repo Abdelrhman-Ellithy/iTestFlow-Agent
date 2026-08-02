@@ -59,6 +59,7 @@ function chainedBoard(): ProjectKnowledgeBase {
       dependency("dep-shipment-order", "Shipment", "Order Request"),
       dependency("dep-order-schedule", "Order Request", "Schedule"),
     ],
+    chatInsights: [],
   } as ProjectKnowledgeBase;
 }
 
@@ -82,7 +83,7 @@ describe("buildKnowledgeOntology", () => {
 
   it("survives a knowledge base with no relationships at all", () => {
     const ontology = buildKnowledgeOntology({
-      modules: [], businessRules: [], stateTransitions: [], glossary: [], crossDependencies: [],
+      modules: [], businessRules: [], stateTransitions: [], glossary: [], crossDependencies: [], chatInsights: [],
     } as unknown as ProjectKnowledgeBase);
 
     expect(resolveConnectedEntries(ontology, { workItemIds: ["1"], text: "anything" }).size).toBe(0);

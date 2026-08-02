@@ -91,6 +91,7 @@ describeDb("source-versioned project knowledge publication", () => {
       evidenceRefs: [evidenceRef("description", "Checkout description")],
     }],
     crossDependencies: [],
+    chatInsights: [],
   };
 
   async function prepare(knowledgeBase: ProjectKnowledgeBase = initialKnowledgeBase) {

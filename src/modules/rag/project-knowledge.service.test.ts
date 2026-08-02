@@ -33,7 +33,10 @@ const draftService = vi.hoisted(() => ({
 vi.mock("@/modules/shared/infrastructure/database/db", () => database);
 vi.mock("@/modules/audit/audit.service", () => ({ writeAuditLog }));
 vi.mock("@/modules/rag/project-knowledge-compiled.service", () => compiledService);
-vi.mock("@/modules/rag/context-chatbot-retrieval.service", () => ({ refreshProjectKnowledgeSearchIndex }));
+vi.mock("@/modules/rag/context-chatbot-retrieval.service", () => ({
+  refreshProjectKnowledgeSearchIndex,
+  CHAT_INSIGHT_CATEGORY: "chat_insight",
+}));
 vi.mock("@/modules/rag/project-context-schema.service", () => ({ ensureProjectContextSyncSchema: vi.fn() }));
 vi.mock("@/modules/rag/project-knowledge-draft.service", () => draftService);
 vi.mock("@/modules/rag/project-knowledge-migration.service", () => ({ backfillProjectKnowledgeCompilerFoundation: vi.fn() }));
@@ -179,6 +182,7 @@ function knowledgeBase(overrides: Partial<ProjectKnowledgeBase> = {}): ProjectKn
     stateTransitions: [],
     glossary: [],
     crossDependencies: [],
+    chatInsights: [],
     ...overrides,
   };
 }

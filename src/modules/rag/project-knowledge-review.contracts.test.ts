@@ -71,6 +71,7 @@ describe("project knowledge review contracts", () => {
         },
       ],
       crossDependencies: [],
+      chatInsights: [],
     };
     const firstPass = projectKnowledgeEntryInstances(knowledgeBase);
     const secondPass = projectKnowledgeEntryInstances(structuredClone(knowledgeBase));

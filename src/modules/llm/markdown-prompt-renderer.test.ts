@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { estimateTokens, usableInputTokens } from "@/modules/llm/token-estimate";
 import {
   buildExistingTestCaseReviewMarkdownPrompt,
   buildRequirementAnalysisMarkdownPrompt,
@@ -50,6 +51,7 @@ function knowledgeBase(): ProjectKnowledgeBase {
     crossDependencies: [
       { id: "dep-pay-notify", sourceModule: "Payments", targetModule: "Notifications", dependencyType: "event", description: "Payment success triggers a customer notification", sourceWorkItemIds: ["101"], evidence: "Dependency evidence" },
     ],
+    chatInsights: [],
   };
 }
 
@@ -218,16 +220,16 @@ describe("buildRequirementAnalysisMarkdownPrompt", () => {
     expect(tiny!.modules[0]!.id).toBe(generous!.modules[0]!.id);
   });
 
-  it("keeps at least the workspace top-K related work items, adding more when the window allows", () => {
+  it("keeps at least the workspace top-K related work items when the window can afford them, adding more when it allows", () => {
     const related = Array.from({ length: 30 }, (_, index) => ({
       id: String(900 + index),
       title: `Related item ${index}`,
-      description: "x".repeat(600),
+      description: "x".repeat(50),
     }));
     const floor = 8;
-    const tiny = buildRequirementAnalysisMarkdownPrompt({
+    const modest = buildRequirementAnalysisMarkdownPrompt({
       currentProject, targetRequirement, relatedWorkItems: related, outputContract,
-      maxInputTokens: 1_000, relatedWorkItemsFloor: floor,
+      maxInputTokens: 1_200, relatedWorkItemsFloor: floor,
     }).prompt;
     const generous = buildRequirementAnalysisMarkdownPrompt({
       currentProject, targetRequirement, relatedWorkItems: related, outputContract,
@@ -235,10 +237,34 @@ describe("buildRequirementAnalysisMarkdownPrompt", () => {
     }).prompt;
 
     const included = (prompt: string) => related.filter((item) => prompt.includes(item.title)).length;
-    // top-K is a deliberate user setting, so it is a floor even on a tiny window...
-    expect(included(tiny)).toBeGreaterThanOrEqual(floor);
+    // top-K is a deliberate user setting, so it is a floor once the window can afford it...
+    expect(included(modest)).toBeGreaterThanOrEqual(floor);
     // ...and the budget only ever adds beyond it.
-    expect(included(generous)).toBeGreaterThan(included(tiny));
+    expect(included(generous)).toBeGreaterThan(included(modest));
+  });
+
+  it("does not let the floor guarantee consume the whole window when related items are unusually large", () => {
+    // Regression guard: the floor stage used to add items regardless of cost while under
+    // the floor count, so a handful of large related items alone could exceed the entire
+    // configured model window with nothing to stop it. This uses the same 600-character
+    // items the previous version of this test forced in whole -- proving 8 of them no
+    // longer fit inside a genuinely tiny window is the fix, not a regression.
+    const related = Array.from({ length: 30 }, (_, index) => ({
+      id: String(900 + index),
+      title: `Related item ${index}`,
+      description: "x".repeat(600),
+    }));
+    const floor = 8;
+    const maxInputTokens = 1_000;
+    const prompt = buildRequirementAnalysisMarkdownPrompt({
+      currentProject, targetRequirement, relatedWorkItems: related, outputContract,
+      maxInputTokens, relatedWorkItemsFloor: floor,
+    }).prompt;
+
+    const includedCount = related.filter((item) => prompt.includes(item.title)).length;
+    expect(includedCount).toBeGreaterThan(0);
+    expect(includedCount).toBeLessThan(floor);
+    expect(estimateTokens(prompt)).toBeLessThanOrEqual(usableInputTokens(maxInputTokens));
   });
 
   it("renders context items and extra instructions only when supplied", () => {
@@ -367,6 +393,7 @@ function largeKnowledgeBase(businessRuleCount: number): ProjectKnowledgeBase {
       dependencyType: "event", description: pad("Dependency", index),
       sourceWorkItemIds: [`${900 + index}`], evidence: `Dependency evidence ${index}`,
     })),
+    chatInsights: [],
   };
 }
 
