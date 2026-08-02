@@ -410,7 +410,10 @@ export function PublishGeneratedCasesPanel({
   const [suiteError, setSuiteError] = useState<string | null>(null);
   const [suiteNotice, setSuiteNotice] = useState<string | null>(null);
   const [state, setState] = useState<ApiState<PublishRunResult>>({ loading: false, error: null, data: null });
-  useUnsavedChangesGuard({ dirty: false, busy: state.loading });
+  const [currentBatchPublished, setCurrentBatchPublished] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const publishInFlightRef = useRef(false);
+  useUnsavedChangesGuard({ dirty: false, busy: publishing });
   const suiteRequestRef = useRef(0);
   const suiteAbortRef = useRef<AbortController | null>(null);
   const parentSuiteInputRef = useRef("");
@@ -536,6 +539,8 @@ export function PublishGeneratedCasesPanel({
 
   async function publish() {
     if (
+      currentBatchPublished ||
+      publishInFlightRef.current ||
       !scope ||
       !targetWorkItemId ||
       !testCases.length ||
@@ -544,6 +549,8 @@ export function PublishGeneratedCasesPanel({
       return;
     }
 
+    publishInFlightRef.current = true;
+    setPublishing(true);
     setState({ loading: true, error: null, data: null });
     try {
       const data = await postJson<PublishRunResult>("/api/publish/test-cases", {
@@ -571,19 +578,26 @@ export function PublishGeneratedCasesPanel({
       setState({ loading: false, error: null, data });
       const casesPublished = data.results.length > 0 && data.results.every((result) => result.success);
       const suitePublished = !createRequirementSuite || data.requirementSuite?.success === true;
-      if (casesPublished && suitePublished) onPublished?.();
+      if (casesPublished && suitePublished) {
+        setCurrentBatchPublished(true);
+        onPublished?.();
+      }
     } catch (error) {
       setState({ loading: false, error: caughtErrorMessage(error, "Publish failed."), data: null });
+    } finally {
+      publishInFlightRef.current = false;
+      setPublishing(false);
     }
   }
 
   const disabled =
+    currentBatchPublished ||
     !scope ||
     !targetWorkItemId ||
     !testCases.length ||
     invalidCaseCount > 0 ||
     (createRequirementSuite && (!selectedTestPlanId || !selectedSuiteId)) ||
-    state.loading;
+    publishing;
   const publishDescription = publishActionDescription({
     scope,
     targetWorkItemId,
@@ -592,7 +606,7 @@ export function PublishGeneratedCasesPanel({
     createRequirementSuite,
     selectedTestPlanId,
     selectedSuiteId,
-    loading: state.loading,
+    loading: publishing,
     error: state.error,
     success: Boolean(state.data && state.data.results.length > 0 && state.data.results.every((result) => result.success)),
   });
@@ -717,8 +731,8 @@ export function PublishGeneratedCasesPanel({
           <ConfirmationDialog
             trigger={
               <Button disabled={disabled}>
-                {state.loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                {state.loading ? "Publishing..." : `Publish ${testCases.length || ""}`}
+                {publishing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                {publishing ? "Publishing..." : `Publish ${testCases.length || ""}`}
               </Button>
             }
             title="Publish generated test cases?"
