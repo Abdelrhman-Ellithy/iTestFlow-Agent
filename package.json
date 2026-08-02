@@ -18,6 +18,7 @@
     "test:coverage:all": "vitest run --config vitest.coverage-all.config.ts --coverage",
     "test:coverage:integration": "node scripts/with-test-database.mjs node_modules/vitest/vitest.mjs run --config vitest.integration-coverage.config.ts --coverage",
     "coverage:inventory:update": "node scripts/update-coverage-inventory.mjs",
+    "test:model": "vitest run --config vitest.integration.config.ts src/modules/rag/embedding-model.quality.db.test.ts",
     "test:integration": "node scripts/with-test-database.mjs node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts",
     "db:migrate": "node-pg-migrate up",
     "db:migrate:test": "node scripts/with-test-database.mjs node_modules/node-pg-migrate/bin/node-pg-migrate.js up",
@@ -27,11 +28,16 @@
     "db:reset:test": "node scripts/with-test-database.mjs node_modules/node-pg-migrate/bin/node-pg-migrate.js down 999999 && node scripts/with-test-database.mjs node_modules/node-pg-migrate/bin/node-pg-migrate.js up",
     "worker": "node --conditions=react-server --import tsx src/worker/main.ts",
     "worker:dev": "node --env-file=.env --conditions=react-server --watch --import tsx src/worker/main.ts",
+    "db:fix-migration-history": "node --env-file=.env --conditions=react-server --import tsx src/scripts/fix-migration-history.ts",
+    "context:repair": "node --env-file=.env --conditions=react-server --import tsx src/scripts/repair-context-index.ts",
+    "context:verify": "node --env-file=.env --conditions=react-server --import tsx src/scripts/verify-context-index.ts",
     "org:enable": "node --env-file=.env --conditions=react-server --import tsx src/scripts/manage-org.ts enable",
-    "org:disable": "node --env-file=.env --conditions=react-server --import tsx src/scripts/manage-org.ts disable"
+    "org:disable": "node --env-file=.env --conditions=react-server --import tsx src/scripts/manage-org.ts disable",
+    "benchmark:run": "node --env-file=.env --conditions=react-server --import tsx src/scripts/run-retrieval-benchmark.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
+    "@huggingface/transformers": "^3.5.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",

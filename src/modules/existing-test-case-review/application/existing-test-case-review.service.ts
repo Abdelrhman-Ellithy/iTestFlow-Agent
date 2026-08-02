@@ -19,12 +19,22 @@ export async function reviewExistingLinkedTestCases(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  /** Model window, so the prompt can size compiled knowledge and related context to it. */
+  maxInputTokens?: number;
+  /** Workspace retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
+  /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
+  rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
   extraInstructions?: string;
 }) {
   const scope = assertProjectScope(input.scope);
   const promptDraft = buildExistingTestCaseReviewPromptDraft({
     scope,
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
+    rankedKnowledgeKeys: input.rankedKnowledgeKeys,
     targetRequirement: input.targetRequirement,
     linkedTestCases: input.linkedTestCases,
     relatedWorkItems: input.relatedWorkItems ?? [],
@@ -80,11 +90,21 @@ export function buildExistingTestCaseReviewPromptDraft(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  /** Model window, so the prompt can size compiled knowledge and related context to it. */
+  maxInputTokens?: number;
+  /** Workspace retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
+  /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
+  rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
   extraInstructions?: string;
 }) {
   const scope = assertProjectScope(input.scope);
   const promptPayload = buildExistingTestCaseReviewMarkdownPrompt({
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
+    rankedKnowledgeKeys: input.rankedKnowledgeKeys,
     currentProject: {
       azureProjectId: scope.azureProjectId,
       azureProjectName: scope.azureProjectName,

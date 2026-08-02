@@ -47,6 +47,12 @@ export async function generateTestExecutionEffort(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  /** Model window, so the prompt can size compiled knowledge and related context to it. */
+  maxInputTokens?: number;
+  /** Workspace retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
+  /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
+  rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
   options: TestExecutionEffortOptions;
 }) {
@@ -54,6 +60,10 @@ export async function generateTestExecutionEffort(input: {
   assertLinkedTestCasesExist(input.linkedTestCases);
   const promptDraft = buildTestExecutionEffortPromptDraft({
     scope,
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
+    rankedKnowledgeKeys: input.rankedKnowledgeKeys,
     targetRequirement: input.targetRequirement,
     linkedTestCases: input.linkedTestCases,
     relatedWorkItems: input.relatedWorkItems ?? [],
@@ -112,6 +122,12 @@ export function buildTestExecutionEffortPromptDraft(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  /** Model window, so the prompt can size compiled knowledge and related context to it. */
+  maxInputTokens?: number;
+  /** Workspace retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
+  /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
+  rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
   options: TestExecutionEffortOptions;
 }) {
@@ -119,6 +135,10 @@ export function buildTestExecutionEffortPromptDraft(input: {
   assertLinkedTestCasesExist(input.linkedTestCases);
   const promptPayload = buildTestExecutionEffortPrompt({
     scope,
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
+    rankedKnowledgeKeys: input.rankedKnowledgeKeys,
     targetRequirement: input.targetRequirement,
     linkedTestCases: input.linkedTestCases,
     relatedWorkItems: input.relatedWorkItems ?? [],
@@ -150,11 +170,21 @@ export function buildTestExecutionEffortPrompt(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  /** Model window, so the prompt can size compiled knowledge and related context to it. */
+  maxInputTokens?: number;
+  /** Workspace retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
+  /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
+  rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
   options: TestExecutionEffortOptions;
 }) {
   const scope = assertProjectScope(input.scope);
   return buildTestExecutionEffortMarkdownPrompt({
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
+    rankedKnowledgeKeys: input.rankedKnowledgeKeys,
     currentProject: {
       azureProjectId: scope.azureProjectId,
       azureProjectName: scope.azureProjectName,

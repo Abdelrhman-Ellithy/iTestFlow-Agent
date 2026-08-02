@@ -3,11 +3,13 @@ import "server-only";
 import { createHash } from "crypto";
 
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
+import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import {
   createId,
   enqueueBackgroundWrite,
   nowIso,
   sqlAll,
+  sqlGet,
   sqlRun,
 } from "@/modules/shared/infrastructure/database/db";
 
@@ -20,7 +22,39 @@ export type ProjectKnowledgeBenchmarkCase = {
   usageCount: number;
   firstSeenAt: string;
   lastSeenAt: string;
+  expectedWorkItemId: string | null;
+  expectedAnswerSnippet: string | null;
+  labeledAt: string | null;
+  labeledBy: string | null;
 };
+
+type ProjectKnowledgeBenchmarkCaseRow = {
+  id: string;
+  source_type: ProjectKnowledgeBenchmarkSource;
+  sanitized_question: string;
+  usage_count: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  expected_work_item_id: string | null;
+  expected_answer_snippet: string | null;
+  labeled_at: string | null;
+  labeled_by: string | null;
+};
+
+function toBenchmarkCase(row: ProjectKnowledgeBenchmarkCaseRow): ProjectKnowledgeBenchmarkCase {
+  return {
+    id: row.id,
+    sourceType: row.source_type,
+    question: row.sanitized_question,
+    usageCount: row.usage_count,
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    expectedWorkItemId: row.expected_work_item_id,
+    expectedAnswerSnippet: row.expected_answer_snippet,
+    labeledAt: row.labeled_at,
+    labeledBy: row.labeled_by,
+  };
+}
 
 export function sanitizeProjectKnowledgeBenchmarkQuestion(value: string) {
   return value
@@ -73,35 +107,74 @@ export function recordProjectKnowledgeBenchmarkQuestion(input: {
 export async function listProjectKnowledgeBenchmarkCases(input: {
   scope: ProjectScope;
   limit?: number;
+  /** Restrict to cases an admin has already given an expected work item — the set the runner can score. */
+  labeledOnly?: boolean;
 }) {
   const scope = assertProjectScope(input.scope);
-  const rows = await sqlAll<{
-    id: string;
-    source_type: ProjectKnowledgeBenchmarkSource;
-    sanitized_question: string;
-    usage_count: number;
-    first_seen_at: string;
-    last_seen_at: string;
-  }>(
+  const rows = await sqlAll<ProjectKnowledgeBenchmarkCaseRow>(
     `
-      SELECT id, source_type, sanitized_question, usage_count, first_seen_at, last_seen_at
+      SELECT id, source_type, sanitized_question, usage_count, first_seen_at, last_seen_at,
+             expected_work_item_id, expected_answer_snippet, labeled_at, labeled_by
       FROM project_knowledge_benchmark_cases
       WHERE project_id = @projectId AND azure_project_id = @azureProjectId AND active = true
+        AND (NOT @labeledOnly OR expected_work_item_id IS NOT NULL)
       ORDER BY usage_count DESC, last_seen_at DESC, id
       LIMIT @limit
     `,
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
+      labeledOnly: input.labeledOnly ?? false,
       limit: Math.min(500, Math.max(1, input.limit ?? 500)),
     },
   );
-  return rows.map((row): ProjectKnowledgeBenchmarkCase => ({
-    id: row.id,
-    sourceType: row.source_type,
-    question: row.sanitized_question,
-    usageCount: row.usage_count,
-    firstSeenAt: row.first_seen_at,
-    lastSeenAt: row.last_seen_at,
-  }));
+  return rows.map(toBenchmarkCase);
+}
+
+/**
+ * Records an admin's expected-answer label for a collected benchmark case. Flat
+ * overwrite (no history): re-labeling replaces the prior label, and the four
+ * columns are always written together so a case is never left with a stale
+ * combination (e.g. a new snippet against an old work item id).
+ */
+export async function labelProjectKnowledgeBenchmarkCase(input: {
+  scope: ProjectScope;
+  caseId: string;
+  expectedWorkItemId?: string | null;
+  expectedAnswerSnippet?: string | null;
+  labeledBy: string;
+}): Promise<ProjectKnowledgeBenchmarkCase> {
+  const scope = assertProjectScope(input.scope);
+  const expectedWorkItemId = input.expectedWorkItemId?.trim() || null;
+  const expectedAnswerSnippet = input.expectedAnswerSnippet?.trim().slice(0, 2000) || null;
+  const now = nowIso();
+  const row = await sqlGet<ProjectKnowledgeBenchmarkCaseRow>(
+    `
+      UPDATE project_knowledge_benchmark_cases
+      SET expected_work_item_id = @expectedWorkItemId,
+          expected_answer_snippet = @expectedAnswerSnippet,
+          labeled_at = @now,
+          labeled_by = @labeledBy
+      WHERE id = @caseId AND project_id = @projectId AND azure_project_id = @azureProjectId AND active = true
+      RETURNING id, source_type, sanitized_question, usage_count, first_seen_at, last_seen_at,
+                expected_work_item_id, expected_answer_snippet, labeled_at, labeled_by
+    `,
+    {
+      caseId: input.caseId,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      expectedWorkItemId,
+      expectedAnswerSnippet,
+      labeledBy: input.labeledBy,
+      now,
+    },
+  );
+  if (!row) {
+    throw new AppError({
+      code: AppErrorCode.ResourceNotFound,
+      message: "Benchmark case was not found in the active project.",
+      userMessage: "This benchmark case was not found. Refresh and try again.",
+    });
+  }
+  return toBenchmarkCase(row);
 }

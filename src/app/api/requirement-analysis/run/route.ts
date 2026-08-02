@@ -9,9 +9,10 @@ import {
 } from "@/modules/credentials/scoped-resolution.service";
 import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-audit";
 import { runRequirementAnalysis } from "@/modules/requirement-analysis/application/requirement-analysis.service";
+import { rankProjectKnowledgeForWorkItem } from "@/modules/rag/knowledge-relevance.service";
 import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext } from "@/modules/rag/auto-context-resolver.service";
-import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { requirementAnalysisChecklistItemIdValues } from "@/modules/requirement-analysis/checklist-options";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
@@ -79,10 +80,24 @@ export async function POST(request: Request) {
       provider,
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
+      retrievalTopK: await resolveRetrievalTopK({
+        workspaceId: ctx.workspace.id,
+        query: `${targetRequirement.title}\n${targetRequirement.description ?? ""}`,
+      }),
       workflowType: "requirement_analysis",
     });
     const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "requirement_analysis" });
+    // Selects the compiled knowledge this work item is actually connected to, by
+    // similarity and by the project's own module/provenance/dependency graph.
+    const rankedKnowledgeKeys = await rankProjectKnowledgeForWorkItem({
+      scope: trustedScope,
+      targetRequirement,
+      projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      contextWorkItemIds: [
+        ...autoContext.relatedWorkItems.map((item) => item.workItemId),
+        ...autoContext.selectedContext.map((item) => item.workItemId),
+      ],
+    });
     const result = await runRequirementAnalysis({
       scope: trustedScope,
       actor: ctx.userId,
@@ -91,6 +106,11 @@ export async function POST(request: Request) {
       relatedWorkItems: autoContext.relatedWorkItems,
       selectedContext: autoContext.selectedContext,
       projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      // Size the prompt's compiled knowledge and related context to the caller's
+      // model, keeping the workspace top-K as a floor rather than a ceiling.
+      maxInputTokens: provider.maxInputTokens,
+      relatedWorkItemsFloor: autoContext.retrievalTopK,
+      rankedKnowledgeKeys: rankedKnowledgeKeys ?? undefined,
       projectKnowledgeNotice: knowledgeContext.promptNotice,
       enabledChecklistItemIds: parsed.data.enabledChecklistItemIds,
       extraInstructions: parsed.data.extraInstructions,

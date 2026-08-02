@@ -42,10 +42,13 @@ import {
   type ProjectKnowledgeEntryByConsolidationCategory,
 } from "./project-knowledge-consolidation";
 import {
+  recordProjectKnowledgeLog,
   recordProjectKnowledgeRevision,
   runProjectKnowledgeLint,
   type ProjectKnowledgeCompilationMode,
 } from "./project-knowledge-compiled.service";
+import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
+import { syncProjectKnowledgeEntryEmbeddings } from "./embedding-store.service";
 import {
   detectProjectKnowledgeHardConflicts,
   sortProjectKnowledgeHardConflictsForReview,
@@ -697,6 +700,11 @@ export async function publishProjectKnowledgeDraft(input: {
   scope: ProjectScope;
   actor: string;
   draftId: string;
+  /**
+   * Seam for tests: undefined uses the built-in local model, null skips embedding
+   * entirely so a test never loads the ~131 MB ONNX weights.
+   */
+  embeddingProvider?: EmbeddingProvider | null;
 }) {
   const scope = assertProjectScope(input.scope);
   const result = await withTransaction(async (client) => {
@@ -857,6 +865,16 @@ export async function publishProjectKnowledgeDraft(input: {
         draftId: draft.id,
         operationCount: asArray(draft.operations_json).length,
         freshnessStatus,
+        // Read back by loadLatestProjectKnowledgeSourceHashes on the next incremental
+        // compile so it can hash-compare against this exact set of sources, rather than
+        // falling back to the "updated since last extraction" timestamp heuristic --
+        // which wrongly treats a work item as already accounted for whenever its Azure
+        // DevOps updatedDate predates the last extraction, even if this is the first
+        // time it has ever been indexed (e.g. newly in scope after widening a fetch
+        // limit or filter, with an old, untouched updatedDate).
+        sourceWorkItemHashes: Object.fromEntries(
+          frozenManifest.map((entry) => [entry.sourceWorkItemId, entry.contentHash]),
+        ),
       },
       baseRevisionId: draft.base_revision_id,
       sourceManifest: frozenManifest,
@@ -934,6 +952,31 @@ export async function publishProjectKnowledgeDraft(input: {
   } catch (error) {
     console.error("Project knowledge lint failed after draft publication", error);
   }
+
+  // Knowledge-entry embedding sync is likewise best-effort and post-commit: a
+  // missing or failing embedding backend must never fail or roll back the
+  // published draft, it only means the Business Owner Assistant's knowledge
+  // search stays lexical until the next successful publish.
+  const embeddingProvider = input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
+  if (embeddingProvider) {
+    try {
+      await syncProjectKnowledgeEntryEmbeddings({ scope, provider: embeddingProvider });
+    } catch (error) {
+      console.error("Knowledge entry embedding sync failed after draft publication", error);
+      recordProjectKnowledgeLog({
+        scope,
+        eventType: "knowledge.embedding_failed",
+        severity: "warning",
+        title: "Knowledge entry embedding sync failed",
+        message: error instanceof Error ? error.message : "Unknown embedding error.",
+        metadata: {
+          provider: embeddingProvider.name,
+          model: embeddingProvider.model,
+        },
+      });
+    }
+  }
+
   return getProjectKnowledgeDraft({ scope, draftId: result.draftId });
 }
 

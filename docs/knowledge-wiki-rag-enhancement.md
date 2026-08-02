@@ -48,6 +48,81 @@ The deterministic lint pass checks for:
 
 Future LLM lint can add contradiction detection, missing glossary links, and broader consistency checks.
 
+## Retrieval
+
+Retrieval combines up to three independent signals, fused via reciprocal rank
+fusion (`src/modules/rag/hybrid-ranking.ts`). Every signal beyond full-text search
+is optional and degrades silently on failure — a signal being unavailable or
+erroring never breaks retrieval, it only means that call falls back to whichever
+signals remain.
+
+**Full-text search** (always on, the baseline). Workflow context retrieval and the
+Business Owner Assistant both query the `document_chunks_fts` /
+`project_knowledge_entries_fts` tables through the shared query builder in
+`src/modules/rag/full-text-search.ts` (prefix-matched terms plus a small QA-domain
+synonym expansion). `to_tsquery('simple', 'term:*')` matches only a word's own
+prefix, so a query for "flow" cannot match "workflow" — that gap is what trigram
+search below closes.
+
+**Trigram search** (always on, no configuration). `src/modules/rag/trigram-search.ts`
+queries the same two FTS mirror tables via PostgreSQL's `pg_trgm` extension
+(`word_similarity()`/`<%`, GIN-indexed — see
+`migrations/1710000021200_trigram_search.js`), catching compound-word/infix matches
+word-prefix FTS matching misses (e.g. "flow" matching "workflow"). Queries under 3
+characters skip trigram entirely (too little signal to compare).
+
+**Semantic retrieval** (always on, no configuration). Context indexing embeds
+work-item chunks
+through `src/modules/rag/embedding-provider.ts` into the `embeddings` table
+(`source_type = 'azure_work_item_chunk'`), and every knowledge base save embeds the
+compiled knowledge entries into the same table under a separate
+`source_type = 'project_knowledge_entry'` (keyed on each entry's stable
+`category`/`entryKey` identity rather than its per-save row id, since
+`project_knowledge_entries` gets a fresh id on every save — see
+`syncProjectKnowledgeEntryEmbeddings` in `src/modules/rag/embedding-store.service.ts`).
+Exactly one model is used and it cannot be changed: nomic-embed-text-v1.5 runs
+in-process via transformers.js/ONNX (`src/modules/rag/local-embedding.ts`),
+auto-downloading quantized weights (~131 MB) into `data/model-cache` on first use —
+zero user setup, no server, no API key, no setting. Pinning the model is deliberate:
+vectors are only comparable within the model that produced them, so a swappable
+backend would silently invalidate every stored vector until a full re-index. A model
+that cannot be loaded degrades retrieval to full-text + trigram rather than failing.
+Retrieval quality is proven against the real weights in
+`embedding-model.quality.db.test.ts` and `embedding-retrieval.quality.db.test.ts`
+(`npm run test:model`).
+Nomic models get retrieval task prefixes
+(document vs. query) applied automatically.
+
+**Where each signal is wired in**: `src/modules/rag/hybrid-chunk-search.ts` is the
+shared FTS+semantic+trigram search for raw work-item chunks, used by both
+`retrieveStoredProjectContext` (workflow auto-context) and the Business Owner
+Assistant's context search — extracted so both call sites share one ranking/fusion
+implementation instead of drifting apart. The Business Owner Assistant's knowledge
+search (`searchKnowledge` in `src/modules/rag/context-chatbot-retrieval.service.ts`)
+independently fuses the same three signals against compiled knowledge entries. When
+neither trigram nor semantic contributes anything to a given call — e.g. the model
+failed to load, or trigram found nothing — the raw full-text ranking is kept as-is
+rather than run through reciprocal rank fusion, since fusing a single list would
+flatten `ts_rank_cd`'s real score spread for no benefit.
+
+**Known limitation — non-English content and the local embedding model.**
+`nomic-embed-text-v1.5` is English-centric. This codebase
+explicitly supports Arabic-language project content elsewhere (see the Arabic
+Unicode range preserved in `normalizeKey` in `src/modules/rag/project-knowledge.service.ts`),
+and Arabic content will get materially weaker semantic search quality than English
+content — full-text search and trigram search are
+unaffected, since both are language-agnostic (`to_tsvector('simple', ...)` does no
+stemming, and trigram similarity is character-based). If a project's content is
+predominantly non-English, changing the pinned model in
+`src/modules/rag/embedding-provider.ts` to a multilingual one is a code change, not a
+setting — and requires re-indexing every project so stored vectors match the new
+model. There is no multilingual configuration path today.
+
+The `VectorStore` interface (`src/modules/rag/rag-types.ts`) and its in-memory
+`LocalKeywordVectorStore` are a currently-unused port kept for a future pluggable
+vector backend (e.g. pgvector at larger scale); production semantic search goes
+through `src/modules/rag/embedding-store.service.ts` directly.
+
 ## Impacted Areas
 
 - Project Context / RAG: incremental sync replaces full delete-and-rebuild as the default.

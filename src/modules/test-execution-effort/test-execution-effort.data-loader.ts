@@ -5,6 +5,7 @@ import type { LLMProvider } from "@/modules/llm/llm-types";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContext, resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
+import { rankProjectKnowledgeForWorkItem } from "@/modules/rag/knowledge-relevance.service";
 
 export async function loadTestExecutionEffortData(input: {
   scope: ProjectScope;
@@ -14,6 +15,13 @@ export async function loadTestExecutionEffortData(input: {
   storyId: string;
   selectedContextIds?: string[];
   retrievalTopK: number;
+  /**
+   * Skips the knowledge ranking (a vector search plus an ontology build) for callers that
+   * do not build a prompt. Defaults to ranking: a caller that silently gets keyword-only
+   * selection because someone forgot to opt in is the more expensive mistake — that is
+   * exactly how the external-prompt path came to diverge from the internal one.
+   */
+  skipKnowledgeRanking?: boolean;
 }) {
   const scope = assertProjectScope(input.scope);
   const targetRequirement = await input.adapter.fetchWorkItemById({
@@ -47,6 +55,19 @@ export async function loadTestExecutionEffortData(input: {
         retrievalTopK: input.retrievalTopK,
       });
   const projectKnowledge = await loadProjectKnowledgeContext({ scope, consumer: "test_execution_effort" });
+  // Selects the compiled knowledge this work item is actually connected to, by
+  // similarity and by the project's own module/provenance/dependency graph.
+  const rankedKnowledgeKeys = input.skipKnowledgeRanking
+    ? null
+    : await rankProjectKnowledgeForWorkItem({
+      scope,
+      targetRequirement,
+      projectKnowledgeBase: projectKnowledge.knowledgeBase,
+      contextWorkItemIds: [
+        ...context.relatedWorkItems.map((item) => item.workItemId),
+        ...context.selectedContext.map((item) => item.workItemId),
+      ],
+    });
 
   return {
     targetRequirement,
@@ -55,6 +76,7 @@ export async function loadTestExecutionEffortData(input: {
     selectedContext: context.selectedContext,
     resolvedContextUsed: context.contextUsed,
     retrievalTopK: context.retrievalTopK,
+    rankedKnowledgeKeys,
     projectKnowledgeBase: projectKnowledge.knowledgeBase,
     projectKnowledgeNotice: projectKnowledge.promptNotice,
     hasProjectContext: Boolean(context.selectedContext.length || context.relatedWorkItems.length || projectKnowledge.knowledgeBase),

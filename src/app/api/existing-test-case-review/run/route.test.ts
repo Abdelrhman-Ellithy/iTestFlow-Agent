@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   fetchLinkedTestCases: vi.fn(),
   reviewExistingLinkedTestCases: vi.fn(),
   resolveWorkflowContext: vi.fn(),
-  getRetrievalTopK: vi.fn(),
+  resolveRetrievalTopK: vi.fn(),
   loadProjectKnowledgeContext: vi.fn(),
   writeGenerationFailureAudit: vi.fn(),
   startWorkflowRun: vi.fn(),
@@ -41,7 +41,7 @@ vi.mock("@/modules/rag/auto-context-resolver.service", () => ({
   resolveWorkflowContext: mocks.resolveWorkflowContext,
 }));
 vi.mock("@/modules/rag/retrieval-config", () => ({
-  getRetrievalTopK: mocks.getRetrievalTopK,
+  resolveRetrievalTopK: mocks.resolveRetrievalTopK,
 }));
 vi.mock("@/modules/rag/project-knowledge.service", () => ({
   loadProjectKnowledgeContext: mocks.loadProjectKnowledgeContext,
@@ -109,7 +109,7 @@ describe("POST /api/existing-test-case-review/run", () => {
       contextUsed: [],
       retrievalTopK: 5,
     });
-    mocks.getRetrievalTopK.mockResolvedValue(5);
+    mocks.resolveRetrievalTopK.mockResolvedValue(5);
     mocks.loadProjectKnowledgeContext.mockResolvedValue({ knowledgeBase: null, health: null, usage: "raw_only", promptNotice: null });
     mocks.startWorkflowRun.mockReturnValue("run-1");
     mocks.reviewExistingLinkedTestCases.mockResolvedValue({

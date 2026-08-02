@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { estimateTokens, usableInputTokens } from "@/modules/llm/token-estimate";
 import {
   buildExistingTestCaseReviewMarkdownPrompt,
   buildRequirementAnalysisMarkdownPrompt,
@@ -50,6 +51,7 @@ function knowledgeBase(): ProjectKnowledgeBase {
     crossDependencies: [
       { id: "dep-pay-notify", sourceModule: "Payments", targetModule: "Notifications", dependencyType: "event", description: "Payment success triggers a customer notification", sourceWorkItemIds: ["101"], evidence: "Dependency evidence" },
     ],
+    chatInsights: [],
   };
 }
 
@@ -156,7 +158,7 @@ describe("buildRequirementAnalysisMarkdownPrompt", () => {
     expect(prompt).not.toContain("# Coverage Expectations");
   });
 
-  it("ranks knowledge by priority sources and term hits, keeps the first three, and truncates the tail", () => {
+  it("ranks knowledge by priority sources and term hits, and includes it all when the window allows", () => {
     const { prompt, relevantProjectKnowledgeBase } = buildRequirementAnalysisMarkdownPrompt({
       currentProject,
       targetRequirement,
@@ -164,25 +166,18 @@ describe("buildRequirementAnalysisMarkdownPrompt", () => {
       outputContract,
     });
 
-    // Modules: budget of 6 keeps priority-source items first, then original order among equal scores.
-    expect(relevantProjectKnowledgeBase?.modules.map((item) => item.id)).toEqual([
+    // Selection is by token budget, not a fixed count: this fixture fits comfortably in
+    // the default window, so nothing is dropped. What still matters is the ORDER —
+    // priority-source items first, then original order among equal scores.
+    expect(relevantProjectKnowledgeBase?.modules.slice(0, 3).map((item) => item.id)).toEqual([
       "mod-payments",
       "mod-cart",
       "mod-shipping",
-      "mod-returns",
-      "mod-invoicing",
-      "mod-catalog",
     ]);
-    // Business rules: priority source outranks term hits; zero-score items survive only inside the first three.
-    expect(relevantProjectKnowledgeBase?.businessRules.map((item) => item.id)).toEqual([
+    expect(relevantProjectKnowledgeBase?.businessRules.slice(0, 2).map((item) => item.id)).toEqual([
       "card-verify",
       "cod-limit",
-      "loyalty-round",
-      "stock-hold",
     ]);
-    expect(prompt).not.toContain("mod-search");
-    expect(prompt).not.toContain("mod-profile");
-    expect(prompt).not.toContain("gift-wrap");
 
     // Every knowledge section header survives selection, in order.
     expectOrdered(prompt, [
@@ -200,6 +195,76 @@ describe("buildRequirementAnalysisMarkdownPrompt", () => {
     expect(prompt).toContain("  - Transition: Cart -> Paid");
     expect(prompt).toContain("- OTP (term): One-time password used to confirm checkout payment");
     expect(prompt).toContain("- dep-pay-notify: Payments -> Notifications");
+  });
+
+  it("truncates compiled knowledge to a small model's window, keeping every category represented", () => {
+    // The previous hard caps (6 modules / 14 rules / …) ignored the model entirely, so a
+    // 213-entry knowledge base reached workflows as a fixed 22% slice. Selection is now
+    // sized to the window, with a per-category floor so nothing disappears completely.
+    const generous = buildRequirementAnalysisMarkdownPrompt({
+      currentProject, targetRequirement, projectKnowledgeBase: knowledgeBase(), outputContract,
+      maxInputTokens: 200_000,
+    }).relevantProjectKnowledgeBase;
+    const tiny = buildRequirementAnalysisMarkdownPrompt({
+      currentProject, targetRequirement, projectKnowledgeBase: knowledgeBase(), outputContract,
+      maxInputTokens: 1_000,
+    }).relevantProjectKnowledgeBase;
+
+    expect(tiny!.modules.length).toBeLessThanOrEqual(generous!.modules.length);
+    expect(tiny!.businessRules.length).toBeLessThanOrEqual(generous!.businessRules.length);
+    // Floors: a narrow window must not silently erase a whole category.
+    for (const category of ["modules", "businessRules", "glossary"] as const) {
+      if (generous![category].length > 0) expect(tiny![category].length).toBeGreaterThan(0);
+    }
+    // Whatever survives is still the highest-ranked, not an arbitrary prefix.
+    expect(tiny!.modules[0]!.id).toBe(generous!.modules[0]!.id);
+  });
+
+  it("keeps at least the workspace top-K related work items when the window can afford them, adding more when it allows", () => {
+    const related = Array.from({ length: 30 }, (_, index) => ({
+      id: String(900 + index),
+      title: `Related item ${index}`,
+      description: "x".repeat(50),
+    }));
+    const floor = 8;
+    const modest = buildRequirementAnalysisMarkdownPrompt({
+      currentProject, targetRequirement, relatedWorkItems: related, outputContract,
+      maxInputTokens: 1_200, relatedWorkItemsFloor: floor,
+    }).prompt;
+    const generous = buildRequirementAnalysisMarkdownPrompt({
+      currentProject, targetRequirement, relatedWorkItems: related, outputContract,
+      maxInputTokens: 200_000, relatedWorkItemsFloor: floor,
+    }).prompt;
+
+    const included = (prompt: string) => related.filter((item) => prompt.includes(item.title)).length;
+    // top-K is a deliberate user setting, so it is a floor once the window can afford it...
+    expect(included(modest)).toBeGreaterThanOrEqual(floor);
+    // ...and the budget only ever adds beyond it.
+    expect(included(generous)).toBeGreaterThan(included(modest));
+  });
+
+  it("does not let the floor guarantee consume the whole window when related items are unusually large", () => {
+    // Regression guard: the floor stage used to add items regardless of cost while under
+    // the floor count, so a handful of large related items alone could exceed the entire
+    // configured model window with nothing to stop it. This uses the same 600-character
+    // items the previous version of this test forced in whole -- proving 8 of them no
+    // longer fit inside a genuinely tiny window is the fix, not a regression.
+    const related = Array.from({ length: 30 }, (_, index) => ({
+      id: String(900 + index),
+      title: `Related item ${index}`,
+      description: "x".repeat(600),
+    }));
+    const floor = 8;
+    const maxInputTokens = 1_000;
+    const prompt = buildRequirementAnalysisMarkdownPrompt({
+      currentProject, targetRequirement, relatedWorkItems: related, outputContract,
+      maxInputTokens, relatedWorkItemsFloor: floor,
+    }).prompt;
+
+    const includedCount = related.filter((item) => prompt.includes(item.title)).length;
+    expect(includedCount).toBeGreaterThan(0);
+    expect(includedCount).toBeLessThan(floor);
+    expect(estimateTokens(prompt)).toBeLessThanOrEqual(usableInputTokens(maxInputTokens));
   });
 
   it("renders context items and extra instructions only when supplied", () => {
@@ -293,5 +358,184 @@ describe("buildTestCaseGenerationMarkdownPrompt", () => {
       outputContract,
     }).prompt;
     expect(empty).toContain("No additional test design options were supplied.");
+  });
+});
+
+// A corpus far larger than any single prompt can carry, shaped like a mature project:
+// business rules dominate, everything else is a long tail. None of the entries mention
+// the target requirement's terms, so keyword ranking cannot separate them and selection
+// is decided purely by budget and weighting — which is the situation under test.
+function largeKnowledgeBase(businessRuleCount: number): ProjectKnowledgeBase {
+  const pad = (label: string, index: number) =>
+    `${label} ${index} covering behaviour that the system must enforce consistently`;
+  return {
+    modules: Array.from({ length: 60 }, (_, index) => ({
+      id: `mod-${index}`, name: `Module ${index}`, description: pad("Module behaviour", index),
+      sourceWorkItemIds: [`${900 + index}`], evidence: `Module evidence ${index}`,
+    })),
+    businessRules: Array.from({ length: businessRuleCount }, (_, index) => ({
+      id: `rule-${index}`, rule: pad("Business rule", index), sourceField: "description",
+      moduleName: `Module ${index % 60}`, sourceWorkItemIds: [`${900 + index}`],
+      evidence: `Rule evidence ${index}`,
+    })),
+    stateTransitions: Array.from({ length: 120 }, (_, index) => ({
+      id: `st-${index}`, workflowName: `Workflow ${index}`, fromState: "Draft", toState: "Approved",
+      triggerOrCondition: pad("Transition trigger", index), actor: "Reviewer",
+      moduleName: `Module ${index % 60}`, sourceWorkItemIds: [`${900 + index}`],
+      evidence: `Transition evidence ${index}`,
+    })),
+    glossary: Array.from({ length: 200 }, (_, index) => ({
+      term: `Term${index}`, type: "term", definition: pad("Definition", index),
+      sourceWorkItemIds: [`${900 + index}`], evidence: `Glossary evidence ${index}`,
+    })),
+    crossDependencies: Array.from({ length: 80 }, (_, index) => ({
+      id: `dep-${index}`, sourceModule: `Module ${index % 60}`, targetModule: `Module ${(index + 1) % 60}`,
+      dependencyType: "event", description: pad("Dependency", index),
+      sourceWorkItemIds: [`${900 + index}`], evidence: `Dependency evidence ${index}`,
+    })),
+    chatInsights: [],
+  };
+}
+
+function selectionFor(builder: typeof buildTestCaseGenerationMarkdownPrompt, options: {
+  projectKnowledgeBase: ProjectKnowledgeBase;
+  maxInputTokens: number;
+  rankedKnowledgeKeys?: Record<string, string[]>;
+}) {
+  const result = builder({
+    currentProject,
+    targetRequirement,
+    outputContract,
+    projectKnowledgeBase: options.projectKnowledgeBase,
+    maxInputTokens: options.maxInputTokens,
+    rankedKnowledgeKeys: options.rankedKnowledgeKeys,
+  });
+  const selected = result.relevantProjectKnowledgeBase;
+  return {
+    modules: selected?.modules.length ?? 0,
+    businessRules: selected?.businessRules.length ?? 0,
+    stateTransitions: selected?.stateTransitions.length ?? 0,
+    glossary: selected?.glossary.length ?? 0,
+    crossDependencies: selected?.crossDependencies.length ?? 0,
+    ruleIds: selected?.businessRules.map((rule) => rule.id) ?? [],
+    moduleIds: selected?.modules.map((module) => module.id) ?? [],
+    total: selected
+      ? selected.modules.length + selected.businessRules.length + selected.stateTransitions.length
+        + selected.glossary.length + selected.crossDependencies.length
+      : 0,
+  };
+}
+
+describe("compiled knowledge selection at corpus scale", () => {
+  const knowledge = largeKnowledgeBase(1000);
+
+  it("gives business rules and state transitions most of the room in test design", () => {
+    const selection = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
+      projectKnowledgeBase: knowledge,
+      maxInputTokens: 128_000,
+    });
+
+    // The failure this guards against is uniform round-robin, under which every
+    // category takes one slot per pass and 1,000 business rules end up with roughly the
+    // same count as 200 glossary terms.
+    expect(selection.businessRules).toBeGreaterThan(selection.glossary * 2);
+    expect(selection.businessRules).toBeGreaterThan(selection.modules * 2);
+    expect(selection.stateTransitions).toBeGreaterThan(selection.glossary);
+    const testConditions = selection.businessRules + selection.stateTransitions;
+    expect(testConditions / selection.total).toBeGreaterThan(0.6);
+  });
+
+  it("keeps every category represented when the window allows it", () => {
+    const selection = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
+      projectKnowledgeBase: knowledge,
+      maxInputTokens: 128_000,
+    });
+
+    expect(selection.modules).toBeGreaterThan(0);
+    expect(selection.glossary).toBeGreaterThan(0);
+    expect(selection.crossDependencies).toBeGreaterThan(0);
+  });
+
+  it("weights the same corpus differently for requirement analysis", () => {
+    // Sized so no category is saturated; at a very large window both profiles simply
+    // send everything and the weighting is unobservable.
+    const design = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
+      projectKnowledgeBase: knowledge, maxInputTokens: 16_000,
+    });
+    const analysis = selectionFor(buildRequirementAnalysisMarkdownPrompt, {
+      projectKnowledgeBase: knowledge, maxInputTokens: 16_000,
+    });
+
+    // Analysis is about scope and impact, so structure earns more room and rules less.
+    expect(analysis.modules).toBeGreaterThan(design.modules);
+    expect(analysis.crossDependencies).toBeGreaterThan(design.crossDependencies);
+    expect(analysis.glossary).toBeGreaterThan(design.glossary);
+    expect(analysis.businessRules).toBeLessThan(design.businessRules);
+  });
+
+  it("scales what it sends with the model window", () => {
+    const small = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
+      projectKnowledgeBase: knowledge, maxInputTokens: 16_000,
+    });
+    const large = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
+      projectKnowledgeBase: knowledge, maxInputTokens: 200_000,
+    });
+
+    expect(small.businessRules).toBeGreaterThan(0);
+    expect(large.businessRules).toBeGreaterThan(small.businessRules * 3);
+  });
+
+  it("does not discard entries that share no wording with the work item", () => {
+    // No module, transition, glossary or dependency in this corpus mentions the target
+    // requirement, so all of them score zero on keyword overlap. They used to be
+    // dropped outright beyond the first three, which capped those categories at three
+    // entries on any model. A large window must now be able to carry the whole corpus.
+    const selection = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
+      projectKnowledgeBase: knowledge, maxInputTokens: 200_000,
+    });
+
+    expect(selection.modules).toBe(knowledge.modules.length);
+    expect(selection.crossDependencies).toBe(knowledge.crossDependencies.length);
+    expect(selection.stateTransitions).toBe(knowledge.stateTransitions.length);
+  });
+
+  it("does not let per-category floors overrun the model window", () => {
+    // A 4k window cannot afford all 22 floor entries. Unbounded floors would take them
+    // anyway and crowd out the work item the prompt exists to reason about.
+    const maxInputTokens = 4_000;
+    const result = buildTestCaseGenerationMarkdownPrompt({
+      currentProject, targetRequirement, outputContract,
+      projectKnowledgeBase: knowledge, maxInputTokens,
+    });
+    const knowledgeTokens = JSON.stringify(result.relevantProjectKnowledgeBase).length / 4;
+
+    expect(knowledgeTokens).toBeGreaterThan(0);
+    expect(knowledgeTokens).toBeLessThan(maxInputTokens * 0.5);
+    expect(result.prompt).toContain("Checkout");
+  });
+
+  it("treats a semantic ranking override as the eligible set, not just an ordering", () => {
+    // The override arrives already cut at a relevance threshold. Admitting the entries
+    // it left out would put back exactly what the threshold removed: a category always
+    // has a best entry, even when it has nothing to do with the work item.
+    const override = { modules: ["mod-57", "mod-58"], crossDependencies: [] };
+    const selection = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
+      projectKnowledgeBase: knowledge, maxInputTokens: 200_000, rankedKnowledgeKeys: override,
+    });
+
+    expect(selection.moduleIds).toEqual(["mod-57", "mod-58"]);
+    expect(selection.crossDependencies).toBe(0);
+    // Categories the override does not mention keep keyword ranking.
+    expect(selection.glossary).toBeGreaterThan(0);
+    expect(selection.businessRules).toBeGreaterThan(0);
+  });
+
+  it("falls back to keyword ranking for every category when no override is supplied", () => {
+    const selection = selectionFor(buildTestCaseGenerationMarkdownPrompt, {
+      projectKnowledgeBase: knowledge, maxInputTokens: 200_000,
+    });
+
+    expect(selection.modules).toBe(knowledge.modules.length);
+    expect(selection.crossDependencies).toBe(knowledge.crossDependencies.length);
   });
 });

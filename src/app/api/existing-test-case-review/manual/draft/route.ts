@@ -9,7 +9,9 @@ import {
 import { buildExistingTestCaseReviewPromptDraft } from "@/modules/existing-test-case-review/application/existing-test-case-review.service";
 import { loadProjectKnowledgeContext } from "@/modules/rag/project-knowledge.service";
 import { resolveWorkflowContextWithoutLLM } from "@/modules/rag/auto-context-resolver.service";
-import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { rankProjectKnowledgeForWorkItem } from "@/modules/rag/knowledge-relevance.service";
+import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
 import { EXTRA_INSTRUCTIONS_MAX_LENGTH } from "@/modules/llm/extra-instructions";
 import { buildWorkflowContextCitations } from "@/modules/rag/workflow-context-citations";
@@ -52,10 +54,35 @@ export async function POST(request: Request) {
       adapter,
       targetRequirement,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
+      retrievalTopK: await resolveRetrievalTopK({
+        workspaceId: ctx.workspace.id,
+        query: `${targetRequirement.title}\n${targetRequirement.description ?? ""}`,
+      }),
     });
     const knowledgeContext = await loadProjectKnowledgeContext({ scope: trustedScope, consumer: "existing_test_case_review_manual" });
+    // The prepared prompt must match what the internal run sends for the same work item.
+    // Without a model window it fell back to a fixed default regardless of the workspace's
+    // configured model-input-limit, and without ranked keys it used keyword-only knowledge
+    // selection — so a user copying this prompt out got materially less context than
+    // production, silently. There is no LLM provider here, so the window comes from the
+    // workspace override: the admin's own statement of what their models accept.
+    const workspaceSettings = await getWorkspaceSettings(ctx.workspace.id);
+    // Same selection the internal run performs. Without it the prepared prompt differed
+    // in *which* knowledge entries it carried, not merely their order — a silent
+    // divergence for the same work item.
+    const rankedKnowledgeKeys = await rankProjectKnowledgeForWorkItem({
+      scope: trustedScope,
+      targetRequirement,
+      projectKnowledgeBase: knowledgeContext.knowledgeBase,
+      contextWorkItemIds: [
+        ...autoContext.relatedWorkItems.map((item) => item.workItemId),
+        ...autoContext.selectedContext.map((item) => item.workItemId),
+      ],
+    });
     const draft = buildExistingTestCaseReviewPromptDraft({
+      rankedKnowledgeKeys: rankedKnowledgeKeys ?? undefined,
+      maxInputTokens: workspaceSettings?.modelInputTokenLimitOverride ?? undefined,
+      relatedWorkItemsFloor: autoContext.retrievalTopK,
       scope: trustedScope,
       targetRequirement,
       linkedTestCases,

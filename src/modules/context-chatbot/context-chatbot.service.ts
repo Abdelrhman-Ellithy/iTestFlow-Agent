@@ -4,10 +4,14 @@ import { writeAuditLog } from "@/modules/audit/audit.service";
 import type { LLMProvider } from "@/modules/llm/llm-types";
 import { assertProjectScope, type ProjectScope } from "@/modules/projects/project-isolation.guard";
 import {
+  CONTEXT_CHATBOT_HISTORY_BUDGET_SHARE,
   CONTEXT_CHATBOT_HISTORY_CONTENT_LIMIT,
-  CONTEXT_CHATBOT_PROMPT_HISTORY_LIMIT,
   type ContextChatbotHistoryMessage,
 } from "@/modules/context-chatbot/context-chatbot-history";
+import { FALLBACK_MAX_INPUT_TOKENS, selectEvidenceWithinBudget } from "@/modules/context-chatbot/evidence-budget";
+import { selectRelevantHistory, type ExchangeScorer } from "@/modules/context-chatbot/conversation-memory";
+import { cosineSimilarity } from "@/modules/rag/hybrid-ranking";
+import { createEmbeddingProvider } from "@/modules/rag/embedding-provider";
 import {
   retrieveContextChatbotEvidence,
   type ContextChatbotContextEvidence,
@@ -24,6 +28,33 @@ export type ContextChatbotCitation = {
   category?: string;
   sourceWorkItemIds?: string[];
 };
+
+/** Mirrors evidence-budget's safety margin so history and evidence share one convention. */
+const BUDGET_SAFETY_FRACTION_FOR_HISTORY = 0.9;
+
+/**
+ * Scores how relevant an earlier exchange is to the current question, using the same
+ * local embedding model retrieval uses. Returns undefined when the model is
+ * unavailable, which degrades conversation memory to plain recency.
+ */
+function buildExchangeScorer(): ExchangeScorer | undefined {
+  const provider = createEmbeddingProvider();
+  return async ({ question, exchanges }) => {
+    const [questionVector] = await provider.embed([question], "query");
+    const exchangeVectors = await provider.embed(exchanges.map((exchange) => exchange.text), "document");
+    return exchangeVectors.map((vector) => cosineSimilarity(questionVector!, vector));
+  };
+}
+
+/**
+ * How many candidates retrieval returns for the budget to choose from. Not what is
+ * sent — see selectEvidenceWithinBudget. Sized to comfortably cover a whole compiled
+ * knowledge base (~213 entries on a real project) without unbounded fetching.
+ */
+export const CONTEXT_CANDIDATE_LIMIT = 40;
+export const KNOWLEDGE_CANDIDATE_LIMIT = 120;
+/** Chunks one work item may contribute, so a single long item cannot fill the evidence. */
+export const MAX_CONTEXT_CHUNKS_PER_WORK_ITEM = 2;
 
 export async function answerContextChatbot(input: {
   scope: ProjectScope;
@@ -42,15 +73,55 @@ export async function answerContextChatbot(input: {
     question,
   });
 
+  // The conversation accumulates; decide what is worth sending before anything is
+  // costed, since the chosen history is part of the fixed prompt the evidence budget
+  // is measured against.
+  const historyBudgetTokens = Math.floor(
+    (input.provider.maxInputTokens ?? FALLBACK_MAX_INPUT_TOKENS)
+      * BUDGET_SAFETY_FRACTION_FOR_HISTORY
+      * CONTEXT_CHATBOT_HISTORY_BUDGET_SHARE,
+  );
+  const history = await selectRelevantHistory({
+    history: input.history ?? [],
+    question,
+    budgetTokens: historyBudgetTokens,
+    scoreExchanges: buildExchangeScorer(),
+  });
+
+  // Retrieve well beyond what will be sent: selection is a token-budget decision made
+  // below, not a fixed count. Over-fetching is cheap (the semantic scan already reads
+  // every vector; the lexical queries are indexed) and it is the only way the budget
+  // has anything to choose from.
   const evidence = await retrieveContextChatbotEvidence({
     scope,
     query: question,
-    contextLimit: 10,
-    knowledgeLimit: 10,
-    maxContextChunksPerWorkItem: 2,
+    contextLimit: CONTEXT_CANDIDATE_LIMIT,
+    knowledgeLimit: KNOWLEDGE_CANDIDATE_LIMIT,
+    maxContextChunksPerWorkItem: MAX_CONTEXT_CHUNKS_PER_WORK_ITEM,
     selectedWorkItemIds: input.selectedWorkItemIds,
+    // Follow-ups ("what about the rejected one?") mean nothing on their own. Retrieval
+    // previously got them verbatim while only the prompt saw the conversation, so the
+    // model knew what was asked but was grounded on evidence chosen without it.
+    history: input.history,
   });
-  const citations = buildCitations(evidence.context, evidence.knowledge);
+  // Everything in the prompt that is not evidence — its cost is known up front, so the
+  // remainder of the model's configured input limit is what evidence may occupy.
+  const fixedPromptText = [
+    buildSystemPrompt(),
+    buildUserPrompt({ scope, question, history, context: [], knowledge: [] }),
+  ].join("\n");
+  const budgeted = selectEvidenceWithinBudget({
+    fixedPromptText,
+    context: evidence.context,
+    knowledge: evidence.knowledge,
+    renderContext: renderContextItem,
+    renderKnowledge: renderKnowledgeItem,
+    maxInputTokens: input.provider.maxInputTokens,
+  });
+  evidence.context = budgeted.context;
+  evidence.knowledge = budgeted.knowledge;
+
+  const { citations, contextCitationCount, linkedWorkItemCount } = buildCitations(evidence.context, evidence.knowledge);
 
   if (!citations.length) {
     const answer = [
@@ -62,6 +133,7 @@ export async function answerContextChatbot(input: {
       citations,
       retrievedContextCount: 0,
       retrievedKnowledgeCount: 0,
+      linkedWorkItemCount: 0,
       provider: input.provider.name,
       model: input.provider.model,
     };
@@ -72,7 +144,7 @@ export async function answerContextChatbot(input: {
     user: buildUserPrompt({
       scope,
       question,
-      history: input.history ?? [],
+      history,
       context: evidence.context,
       knowledge: evidence.knowledge,
     }),
@@ -100,9 +172,13 @@ export async function answerContextChatbot(input: {
     details: {
       provider: result.provider,
       model: result.model,
-      retrievedContextCount: evidence.context.length,
+      retrievedContextCount: contextCitationCount,
       retrievedKnowledgeCount: evidence.knowledge.length,
+      linkedWorkItemCount,
       citationCount: citations.length,
+      // Logged so budget behaviour is observable in production: whether evidence was
+      // actually trimmed, and how much of the model's window it used.
+      evidenceBudget: budgeted.budget,
       knowledgeRetrievalMode: evidence.retrievalMode ?? "raw_wins",
     },
   });
@@ -110,8 +186,9 @@ export async function answerContextChatbot(input: {
   return {
     answer: result.text,
     citations,
-    retrievedContextCount: evidence.context.length,
+    retrievedContextCount: contextCitationCount,
     retrievedKnowledgeCount: evidence.knowledge.length,
+    linkedWorkItemCount,
     provider: result.provider,
     model: result.model,
   };
@@ -162,17 +239,37 @@ function buildUserPrompt(input: {
   ].join("\n");
 }
 
+/**
+ * Renders history that `selectRelevantHistory` has already chosen within a token budget.
+ *
+ * Deliberately does NOT re-truncate to the most recent N. That slice used to live here,
+ * from when history was a pure recency window, and it silently defeated the whole point
+ * of relevance-based selection: recovered exchanges are older than the always-kept recent
+ * ones, so they sort first and a trailing slice removes exactly them — the correction or
+ * constraint the selector went out of its way to keep would be the first thing dropped.
+ * The budget is the authority on how much history is affordable; this only formats it.
+ *
+ * The per-message cap stays: it bounds one pathological message, and truncating a message
+ * can only spend less than the budget already allowed for it.
+ */
 function renderHistory(history: ContextChatbotHistoryMessage[]) {
-  const recent = history
-    .slice(-CONTEXT_CHATBOT_PROMPT_HISTORY_LIMIT)
+  const rendered = history
     .map((message) => ({
       role: message.role,
       content: message.content.trim().slice(0, CONTEXT_CHATBOT_HISTORY_CONTENT_LIMIT),
     }))
     .filter((message) => message.content);
 
-  if (!recent.length) return "No prior chat history in this session.";
-  return recent.map((message) => `- ${message.role}: ${message.content}`).join("\n");
+  if (!rendered.length) return "No prior chat history in this session.";
+  return rendered.map((message) => `- ${message.role}: ${message.content}`).join("\n");
+}
+
+function renderContextItem(item: ContextChatbotContextEvidence) {
+  return renderContext([item]);
+}
+
+function renderKnowledgeItem(item: ContextChatbotKnowledgeEvidence) {
+  return renderKnowledge([item]);
 }
 
 function renderContext(context: ContextChatbotContextEvidence[]) {
@@ -210,6 +307,10 @@ function renderKnowledge(knowledge: ContextChatbotKnowledgeEvidence[]) {
     .join("\n\n");
 }
 
+// Counts are derived by direct construction here, never by comparing array lengths
+// afterward: context can legitimately contain multiple chunks for the same work item
+// (see maxContextChunksPerWorkItem), which this dedups to one citation card, so a
+// naive `citations.length - context.length` subtraction can go negative.
 function buildCitations(context: ContextChatbotContextEvidence[], knowledge: ContextChatbotKnowledgeEvidence[]) {
   const byId = new Map<string, ContextChatbotCitation>();
 
@@ -222,7 +323,9 @@ function buildCitations(context: ContextChatbotContextEvidence[], knowledge: Con
       workItemType: item.workItemType,
     });
   });
+  const contextCitationCount = byId.size;
 
+  let linkedWorkItemCount = 0;
   knowledge.forEach((item) => {
     item.sourceWorkItemIds.forEach((sourceWorkItemId) => {
       const workItemId = normalizeWorkItemId(sourceWorkItemId);
@@ -236,6 +339,7 @@ function buildCitations(context: ContextChatbotContextEvidence[], knowledge: Con
           workItemId,
           workItemType: "Work item",
         });
+        linkedWorkItemCount += 1;
       }
     });
 
@@ -248,7 +352,7 @@ function buildCitations(context: ContextChatbotContextEvidence[], knowledge: Con
     });
   });
 
-  return Array.from(byId.values());
+  return { citations: Array.from(byId.values()), contextCitationCount, linkedWorkItemCount };
 }
 
 function normalizeWorkItemId(value: string) {

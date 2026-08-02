@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { authErrorResponse, getUserAzureAdapter, requireWorkflowContext } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { loadTestExecutionEffortData } from "@/modules/test-execution-effort/test-execution-effort.data-loader";
 import { buildTestExecutionEffortPreview, toSafeTestExecutionEffortError } from "@/modules/test-execution-effort/test-execution-effort.service";
 import {
@@ -39,7 +39,9 @@ export async function POST(request: Request) {
       adapter,
       storyId: parsed.data.storyId,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
+      retrievalTopK: await resolveRetrievalTopK({ workspaceId: ctx.workspace.id, query: "" }),
+      // This route returns a preview, not a prompt, so the ranking would be discarded.
+      skipKnowledgeRanking: true,
     });
     const preview = buildTestExecutionEffortPreview({
       targetRequirement: data.targetRequirement,

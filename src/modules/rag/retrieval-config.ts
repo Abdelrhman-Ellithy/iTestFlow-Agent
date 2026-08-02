@@ -32,3 +32,27 @@ export async function getRetrievalTopK(workspaceId: string): Promise<number> {
   if (settings?.retrievalTopK != null) return clampTopK(settings.retrievalTopK);
   return getRetrievalTopKFromEnv();
 }
+
+export type RetrievalTopKInput = {
+  workspaceId: string;
+  /**
+   * The query text — accepted now so call sites don't need to change again once
+   * this becomes query-dependent, but NOT used yet. A precise question needs
+   * fewer chunks than a broad one, but tuning that heuristic blind repeats a
+   * mistake already made once this session (a relevance threshold picked without
+   * measurement and reverted when real data showed it wrong). This function stays
+   * a pass-through until the evaluation loop (Front C) can validate a heuristic
+   * against real questions instead of guessing.
+   */
+  query: string;
+};
+
+/**
+ * Call-site surface for retrieval breadth. Identical output to getRetrievalTopK
+ * today — see the query field's doc comment for why it's unused. Swapping call
+ * sites to this function now means no call-site churn later, once a
+ * measurement-backed heuristic exists to put in the body.
+ */
+export async function resolveRetrievalTopK(input: RetrievalTopKInput): Promise<number> {
+  return getRetrievalTopK(input.workspaceId);
+}

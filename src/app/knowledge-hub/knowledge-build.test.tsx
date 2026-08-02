@@ -486,7 +486,9 @@ describe("Project Knowledge conflict review", () => {
       expect(screen.getByText("Page 2 of 20")).toBeTruthy();
       expect(screen.getAllByRole("article")).toHaveLength(50);
     });
-  });
+    // Builds and renders a 1,000-entry fixture twice; the default 5s is not enough
+    // under coverage instrumentation, where the same run takes 5-7s.
+  }, 20_000);
 
   it("keeps cross-page selections locally and posts identifiers only", async () => {
     const twoConflictPage = (page: number) => {

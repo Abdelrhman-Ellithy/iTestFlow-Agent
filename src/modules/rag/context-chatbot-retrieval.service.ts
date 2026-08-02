@@ -11,6 +11,18 @@ import {
 } from "./project-knowledge.schema";
 import { canonicalizeProjectKnowledgeKey, getEntryProvenanceStatus } from "./project-knowledge-contracts";
 import { ensureProjectContextSyncSchema } from "./project-context-schema.service";
+import { buildFtsQueryWithDynamicSynonyms } from "./full-text-search";
+import {
+  buildRetrievalQueryWithHistory,
+  type ContextChatbotHistoryMessage,
+} from "@/modules/context-chatbot/context-chatbot-history";
+import { searchProjectKnowledgeByTrigram } from "./trigram-search";
+import { fuseByReciprocalRank } from "./hybrid-ranking";
+import { searchProjectChunksHybrid } from "./hybrid-chunk-search";
+import type { MetadataFilter } from "./metadata-filter";
+import { createEmbeddingProvider, type EmbeddingProvider } from "./embedding-provider";
+import type { RerankProvider } from "./rerank-provider";
+import { searchProjectKnowledgeByEmbedding } from "./embedding-store.service";
 
 export type ContextChatbotContextEvidence = {
   sourceType: "project_context";
@@ -154,6 +166,174 @@ export async function refreshProjectContextSearchIndex(
   }
 }
 
+/**
+ * Category for knowledge an admin approved from a chatbot answer, as opposed to
+ * knowledge the compiler extracted from work items.
+ *
+ * Kept as its own category for two reasons. It must survive a knowledge republish,
+ * which wipes and rebuilds every compiled entry — an approved insight is not derived
+ * from the compiled base and would otherwise vanish the next time anyone publishes a
+ * draft. And it must stay distinguishable in citations: a compiled entry is
+ * re-anchorable to immutable snapshot quotes, while this is a model synthesis a human
+ * accepted. Both are useful; conflating them would quietly weaken what "verified"
+ * means everywhere it is asserted.
+ */
+export const CHAT_INSIGHT_CATEGORY = "chat_insight";
+
+/**
+ * Makes an approved chatbot answer searchable, by writing it into the same two tables
+ * compiled knowledge lives in. Every knowledge retrieval signal — full text, trigram,
+ * and (once embeddings sync) semantic — then finds it with no additional plumbing,
+ * because they all read these tables.
+ *
+ * Idempotent per candidate: re-approving replaces the entry rather than adding a second
+ * copy.
+ */
+export async function indexApprovedChatInsight(
+  input: {
+    scope: ProjectScope;
+    candidateId: string;
+    /**
+     * Identity of the insight itself, derived from its content by the caller. Keyed on
+     * content rather than on the candidate so the same answer approved twice — from two
+     * separate saves — collapses to one entry instead of stacking duplicates in every
+     * later prompt.
+     */
+    entryKey: string;
+    title: string;
+    content: string;
+    sourceWorkItemIds: string[];
+    evidence: string;
+  },
+  client?: PoolClient,
+) {
+  const scope = assertProjectScope(input.scope);
+  await ensureProjectContextSyncSchema();
+  const now = nowIso();
+  const entryKey = input.entryKey;
+  const sourceWorkItemIds = input.sourceWorkItemIds.join(", ");
+  const metadataJson = JSON.stringify({ candidateId: input.candidateId, origin: "chatbot_answer" });
+
+  for (const table of ["project_knowledge_entries_fts", "project_knowledge_entries"] as const) {
+    await sqlRun(
+      `
+        DELETE FROM ${table}
+        WHERE project_id = @projectId
+          AND azure_project_id = @azureProjectId
+          AND category = @category
+          AND entry_key = @entryKey
+      `,
+      {
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        category: CHAT_INSIGHT_CATEGORY,
+        entryKey,
+      },
+      client,
+    );
+  }
+
+  const id = createId("pke");
+  await sqlRun(
+    `
+      INSERT INTO project_knowledge_entries (
+        id, project_id, azure_project_id, azure_project_name, azure_organization_url,
+        knowledge_base_id, category, entry_key, title, content, source_work_item_ids,
+        evidence, metadata_json, created_at, updated_at, provenance_status
+      ) VALUES (
+        @id, @projectId, @azureProjectId, @azureProjectName, @azureOrganizationUrl,
+        @knowledgeBaseId, @category, @entryKey, @title, @content, @sourceWorkItemIds,
+        @evidence, @metadataJson, @createdAt, @updatedAt, @provenanceStatus
+      )
+    `,
+    {
+      id,
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      azureProjectName: scope.azureProjectName,
+      azureOrganizationUrl: scope.azureOrganizationUrl,
+      // Traceable back to the candidate it came from rather than to a compiled base,
+      // because it did not come from one.
+      knowledgeBaseId: input.candidateId,
+      category: CHAT_INSIGHT_CATEGORY,
+      entryKey,
+      title: input.title,
+      content: input.content,
+      sourceWorkItemIds,
+      evidence: input.evidence,
+      metadataJson,
+      createdAt: now,
+      updatedAt: now,
+      // Never "verified": a synthesis across several work items is not a quote from any
+      // one of them, which is exactly why the candidate was held ungrounded.
+      provenanceStatus: "human_approved",
+    },
+    client,
+  );
+
+  await sqlRun(
+    `
+      INSERT INTO project_knowledge_entries_fts (
+        project_id, azure_project_id, entry_id, category, entry_key, title,
+        content, source_work_item_ids, evidence, metadata_json
+      ) VALUES (
+        @projectId, @azureProjectId, @entryId, @category, @entryKey, @title,
+        @content, @sourceWorkItemIds, @evidence, @metadataJson
+      )
+    `,
+    {
+      projectId: scope.projectId,
+      azureProjectId: scope.azureProjectId,
+      entryId: id,
+      category: CHAT_INSIGHT_CATEGORY,
+      entryKey,
+      title: input.title,
+      content: input.content,
+      sourceWorkItemIds,
+      evidence: input.evidence,
+      metadataJson,
+    },
+    client,
+  );
+  return { entryId: id };
+}
+
+/**
+ * Removes an approved insight from the search index, so rejecting it actually stops it
+ * being answerable.
+ *
+ * Entries are keyed by content, which means two candidates carrying the same answer share
+ * one entry. The caller must therefore only invoke this once no *other* integrated
+ * candidate still claims that content — otherwise rejecting one duplicate would silently
+ * un-publish another admin's still-approved insight.
+ */
+export async function removeChatInsightFromSearchIndex(
+  input: { scope: ProjectScope; entryKey: string },
+  client?: PoolClient,
+) {
+  const scope = assertProjectScope(input.scope);
+  let removed = 0;
+  for (const table of ["project_knowledge_entries_fts", "project_knowledge_entries"] as const) {
+    removed = await sqlRun(
+      `
+        DELETE FROM ${table}
+        WHERE project_id = @projectId
+          AND azure_project_id = @azureProjectId
+          AND category = @category
+          AND entry_key = @entryKey
+      `,
+      {
+        projectId: scope.projectId,
+        azureProjectId: scope.azureProjectId,
+        category: CHAT_INSIGHT_CATEGORY,
+        entryKey: input.entryKey,
+      },
+      client,
+    );
+  }
+  return { removed };
+}
+
 export async function refreshProjectKnowledgeSearchIndex(
   input: {
     scope: ProjectScope;
@@ -189,15 +369,20 @@ export async function refreshProjectKnowledgeSearchIndex(
     ]),
   );
 
+  // Compiled entries are rebuilt wholesale from the base, but admin-approved chat
+  // insights are not in that base and must survive the rebuild — without this guard,
+  // publishing any knowledge draft silently discards every approved insight.
   await sqlRun(
     `
     DELETE FROM project_knowledge_entries_fts
     WHERE project_id = @projectId
       AND azure_project_id = @azureProjectId
+      AND category <> @chatInsightCategory
   `,
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
+      chatInsightCategory: CHAT_INSIGHT_CATEGORY,
     },
     client,
   );
@@ -207,10 +392,12 @@ export async function refreshProjectKnowledgeSearchIndex(
     DELETE FROM project_knowledge_entries
     WHERE project_id = @projectId
       AND azure_project_id = @azureProjectId
+      AND category <> @chatInsightCategory
   `,
     {
       projectId: scope.projectId,
       azureProjectId: scope.azureProjectId,
+      chatInsightCategory: CHAT_INSIGHT_CATEGORY,
     },
     client,
   );
@@ -287,7 +474,12 @@ export async function refreshProjectKnowledgeSearchIndex(
   }
 }
 
-export async function ensureContextChatbotSearchIndexes(input: { scope: ProjectScope }) {
+/**
+ * Self-heals the chunk FTS table when it drifts from the active chunk set (e.g. a
+ * database restored from before the FTS table was populated). Cheap when consistent:
+ * two COUNT queries against indexed columns.
+ */
+export async function ensureProjectContextSearchIndex(input: { scope: ProjectScope }) {
   const scope = assertProjectScope(input.scope);
   ensureProjectContextSyncSchema();
   const chunkCount = await countRows(
@@ -317,6 +509,11 @@ export async function ensureContextChatbotSearchIndexes(input: { scope: ProjectS
   if (chunkCount > 0 && chunkCount !== chunkFtsCount) {
     await refreshProjectContextSearchIndex({ scope });
   }
+}
+
+export async function ensureContextChatbotSearchIndexes(input: { scope: ProjectScope }) {
+  const scope = assertProjectScope(input.scope);
+  await ensureProjectContextSearchIndex({ scope });
 
   const knowledgeSnapshot = await sqlGet<KnowledgeSnapshotRow>(
     `
@@ -368,6 +565,23 @@ export async function retrieveContextChatbotEvidence(input: {
   knowledgeLimit?: number;
   maxContextChunksPerWorkItem?: number;
   selectedWorkItemIds?: string[];
+  /**
+   * Recent conversation, used ONLY to give a follow-up question enough meaning to
+   * retrieve on. Lexical search still uses the literal question.
+   */
+  history?: ContextChatbotHistoryMessage[];
+  /**
+   * Seam for tests: undefined uses the built-in local model, null skips semantic
+   * search entirely so a test never loads the ~131 MB ONNX weights.
+   */
+  embeddingProvider?: EmbeddingProvider | null;
+  /**
+   * Seam for tests: undefined uses the built-in local cross-encoder, null skips
+   * reranking entirely so a test never loads the model weights.
+   */
+  rerankProvider?: RerankProvider | null;
+  /** Opt-in restriction by work item type / area path / iteration path. Never state. */
+  filter?: MetadataFilter;
 }): Promise<ContextChatbotEvidence> {
   const scope = assertProjectScope(input.scope);
   await ensureContextChatbotSearchIndexes({ scope });
@@ -375,7 +589,13 @@ export async function retrieveContextChatbotEvidence(input: {
   const knowledgeLimit = input.knowledgeLimit ?? 10;
   const maxContextChunksPerWorkItem = input.maxContextChunksPerWorkItem ?? 2;
 
-  const ftsQuery = buildFtsQuery(input.query);
+  // Resolved once and threaded into every consumer below, so a caller (tests) can
+  // disable semantic search for the whole evidence pass with a single seam.
+  const embeddingProvider = input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
+  // Lexical search matches the literal question; semantic search gets the follow-up
+  // resolved against recent turns. See buildRetrievalQueryWithHistory for why they differ.
+  const semanticQuery = buildRetrievalQueryWithHistory(input.query, input.history);
+  const ftsQuery = await buildFtsQueryWithDynamicSynonyms(input.query, embeddingProvider);
   const selectedWorkItemIds = Array.from(new Set(input.selectedWorkItemIds ?? []));
   if (!ftsQuery) {
     const selected = selectedWorkItemIds.length
@@ -389,7 +609,7 @@ export async function retrieveContextChatbotEvidence(input: {
     return { context: selected, knowledge: await getFallbackKnowledge({ scope, limit: knowledgeLimit }) };
   }
 
-  const knowledge = await searchKnowledge({ scope, ftsQuery, limit: knowledgeLimit });
+  const knowledge = await searchKnowledge({ scope, ftsQuery, rawQuery: input.query, semanticQuery, limit: knowledgeLimit, embeddingProvider });
   const trustedCompiled = knowledge.length > 0 && await hasTrustedCompiledKnowledge(scope);
   const selected = selectedWorkItemIds.length
     ? await loadSelectedContext({
@@ -402,8 +622,13 @@ export async function retrieveContextChatbotEvidence(input: {
   const searched = await searchContext({
     scope,
     ftsQuery,
+    rawQuery: input.query,
+    semanticQuery,
     limit: contextLimit,
     maxChunksPerWorkItem: maxContextChunksPerWorkItem,
+    embeddingProvider,
+    rerankProvider: input.rerankProvider,
+    filter: input.filter,
   });
   const context = mergeContextEvidence(selected, searched, contextLimit, maxContextChunksPerWorkItem);
   return {
@@ -494,55 +719,42 @@ async function hasTrustedCompiledKnowledge(scope: ProjectScope) {
   );
 }
 
-async function searchContext(input: { scope: ProjectScope; ftsQuery: string; limit: number; maxChunksPerWorkItem?: number }) {
+async function searchContext(input: {
+  scope: ProjectScope;
+  ftsQuery: string;
+  rawQuery: string;
+  semanticQuery?: string;
+  limit: number;
+  maxChunksPerWorkItem?: number;
+  embeddingProvider?: EmbeddingProvider | null;
+  rerankProvider?: RerankProvider | null;
+  /** Opt-in restriction by work item type / area path / iteration path. Never state. */
+  filter?: MetadataFilter;
+}) {
   const maxChunksPerWorkItem = positiveIntegerOrDefault(input.maxChunksPerWorkItem, input.limit);
-  try {
-    const rows = await sqlAll<ChunkFtsRow>(
-      `
-        WITH ranked AS (
-          SELECT chunk_id, azure_work_item_id, work_item_type, title, content, metadata_json,
-                 ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) AS rank,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY azure_work_item_id
-                   ORDER BY ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) DESC, chunk_id ASC
-                 ) AS work_item_rank
-          FROM document_chunks_fts
-          WHERE tsv @@ to_tsquery('simple', @ftsQuery)
-            AND project_id = @projectId
-            AND azure_project_id = @azureProjectId
-        )
-        SELECT chunk_id, azure_work_item_id, work_item_type, title, content, metadata_json
-        FROM ranked
-        WHERE work_item_rank <= @maxChunksPerWorkItem
-        ORDER BY rank DESC
-        LIMIT @limit
-      `,
-      {
-        ftsQuery: input.ftsQuery,
-        projectId: input.scope.projectId,
-        azureProjectId: input.scope.azureProjectId,
-        limit: input.limit,
-        maxChunksPerWorkItem,
-      },
-    );
-
-    const evidence = rows.map((row) => ({
-      sourceType: "project_context" as const,
-      sourceId: `WI:${row.azure_work_item_id}`,
-      workItemId: row.azure_work_item_id,
-      workItemType: row.work_item_type,
-      title: row.title,
-      content: row.content,
-      metadata: parseChunkMetadata(row.metadata_json),
-    }));
-    return limitContextEvidenceByWorkItem(evidence, {
-      limit: input.limit,
-      maxChunksPerWorkItem,
-    });
-  } catch (error) {
-    console.error("Project chat context FTS search failed", error);
-    return [];
-  }
+  // searchProjectChunksHybrid never throws (every source is independently caught
+  // inside it) and already enforces the per-work-item cap on its fused output, so
+  // no outer try/catch or second cap pass is needed here.
+  const fused = await searchProjectChunksHybrid({
+    scope: input.scope,
+    ftsQuery: input.ftsQuery,
+    rawQuery: input.rawQuery,
+    semanticQuery: input.semanticQuery,
+    topK: input.limit,
+    maxChunksPerWorkItem,
+    embeddingProvider: input.embeddingProvider,
+    rerankProvider: input.rerankProvider,
+    filter: input.filter,
+  });
+  return fused.map(({ row }) => ({
+    sourceType: "project_context" as const,
+    sourceId: `WI:${row.azure_work_item_id ?? ""}`,
+    workItemId: row.azure_work_item_id ?? "",
+    workItemType: row.work_item_type ?? "Unknown",
+    title: row.document_name ?? "Untitled work item",
+    content: row.content,
+    metadata: parseChunkMetadata(row.metadata_json),
+  }));
 }
 
 export function limitContextEvidenceByWorkItem<TItem extends { workItemId: string }>(
@@ -566,9 +778,17 @@ export function limitContextEvidenceByWorkItem<TItem extends { workItemId: strin
   return selected;
 }
 
-async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; limit: number }) {
+async function searchKnowledge(input: {
+  scope: ProjectScope;
+  ftsQuery: string;
+  rawQuery: string;
+  semanticQuery?: string;
+  limit: number;
+  embeddingProvider?: EmbeddingProvider | null;
+}) {
+  let ftsRows: KnowledgeFtsRow[] = [];
   try {
-    const rows = await sqlAll<KnowledgeFtsRow>(
+    ftsRows = await sqlAll<KnowledgeFtsRow>(
       `
         SELECT entry_id, category, entry_key, title, content, source_work_item_ids,
                evidence, ts_rank_cd(tsv, to_tsquery('simple', @ftsQuery)) AS rank
@@ -586,13 +806,51 @@ async function searchKnowledge(input: { scope: ProjectScope; ftsQuery: string; l
         limit: input.limit,
       },
     );
-
-    const results = rows.map(toKnowledgeEvidence);
-    return results.length ? results : await getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
   } catch (error) {
     console.error("Project chat knowledge FTS search failed", error);
-    return getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
   }
+
+  let trigramRows: KnowledgeFtsRow[] = [];
+  try {
+    trigramRows = await searchProjectKnowledgeByTrigram({
+      scope: input.scope,
+      query: input.rawQuery,
+      topK: input.limit,
+    });
+  } catch (error) {
+    console.error("Project chat knowledge trigram search failed", error);
+  }
+
+  const embeddingProvider =
+    input.embeddingProvider !== undefined ? input.embeddingProvider : createEmbeddingProvider();
+  let semanticRows: KnowledgeFtsRow[] = [];
+  if (embeddingProvider) {
+    try {
+      semanticRows = await searchProjectKnowledgeByEmbedding({
+        scope: input.scope,
+        provider: embeddingProvider,
+        query: input.semanticQuery ?? input.rawQuery,
+        topK: input.limit,
+      });
+    } catch (error) {
+      console.error("Project chat knowledge semantic search failed", error);
+    }
+  }
+
+  // No trigram or semantic signal: keep FTS's own ts_rank_cd order rather than
+  // running a single-list fusion through RRF, which would flatten its real score
+  // spread.
+  if (!trigramRows.length && !semanticRows.length) {
+    const results = ftsRows.map(toKnowledgeEvidence);
+    return results.length ? results : getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
+  }
+
+  const fused = fuseByReciprocalRank({
+    lists: [ftsRows, trigramRows, semanticRows].filter((list) => list.length > 0),
+    getKey: (row) => row.entry_id,
+  });
+  if (!fused.length) return getFallbackKnowledge({ scope: input.scope, limit: Math.min(4, input.limit) });
+  return fused.slice(0, input.limit).map(({ item }) => toKnowledgeEvidence(item));
 }
 
 async function getFallbackKnowledge(input: { scope: ProjectScope; limit: number }) {
@@ -737,24 +995,4 @@ async function countRows(sql: string, scope: ProjectScope) {
     azureProjectId: scope.azureProjectId,
   });
   return row?.count ?? 0;
-}
-
-// Builds a PostgreSQL to_tsquery string from free text: lowercased alphanumeric
-// terms (>2 chars, max 16) become prefix matches joined with OR, e.g.
-// "login flow" -> "login:* | flow:*". Terms are alphanumeric-only by
-// construction, so they are safe to interpolate into to_tsquery('simple', ...).
-// Exported for unit tests only; production callers go through
-// retrieveContextChatbotEvidence.
-export function buildFtsQuery(value: string) {
-  const terms = Array.from(
-    new Set(
-      value
-        .toLowerCase()
-        .split(/[^\p{L}\p{N}]+/u)
-        .map((term) => term.trim())
-        .filter((term) => term.length > 2),
-    ),
-  ).slice(0, 16);
-
-  return terms.map((term) => `${term}:*`).join(" | ");
 }

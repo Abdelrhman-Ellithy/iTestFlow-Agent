@@ -8,6 +8,7 @@ import {
   appendUniqueContextItems,
   IndexSummary,
   IndexedContextView,
+  KnowledgeBenchmarkRow,
   KnowledgeCandidatesView,
   KnowledgeExplorer,
   KnowledgeOpsPanel,
@@ -125,6 +126,12 @@ function knowledgeOpsProps(onReportMiss = vi.fn().mockResolvedValue(true)) {
     onExport: vi.fn(),
     onReportMiss,
     onTransitionIssue: vi.fn().mockResolvedValue(undefined),
+    benchmarkCases: [],
+    benchmarkVisible: false,
+    benchmarkLoading: false,
+    benchmarkLabelingId: null,
+    onToggleBenchmark: vi.fn(),
+    onLabelBenchmarkCase: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -143,10 +150,10 @@ describe("Knowledge Hub candidates UI", () => {
     expect(screen.getByText("Sources: 42")).toBeTruthy();
     expect(screen.getByText("Evidence and citations")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Request Integration" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Integrate" })).toBeNull();
   });
 
-  it("lets owners filter and request integration for grounded candidates", async () => {
+  it("lets owners filter and integrate a candidate", async () => {
     const onStatusChange = vi.fn();
     const onAction = vi.fn().mockResolvedValue(undefined);
     render(<KnowledgeCandidatesView
@@ -159,10 +166,91 @@ describe("Knowledge Hub candidates UI", () => {
     />);
 
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "grounded" } });
-    fireEvent.click(screen.getByRole("button", { name: "Request Integration" }));
+    fireEvent.click(screen.getByRole("button", { name: "Integrate" }));
 
     expect(onStatusChange).toHaveBeenCalledWith("grounded");
     await waitFor(() => expect(onAction).toHaveBeenCalledWith("candidate-1", "request_integration"));
+  });
+
+  it("offers integration for an ungrounded candidate", () => {
+    // A saved chatbot answer is stored ungrounded and can never become grounded, since
+    // grounding requires every fragment to re-anchor to an immutable snapshot quote and
+    // a synthesis is not a quote. Gating the action on grounded made it unreachable for
+    // the only content that ever arrives here.
+    render(<KnowledgeCandidatesView
+      candidates={[{ ...candidate, status: "legacy_ungrounded" as const }]}
+      status="all"
+      loading={false}
+      canManage
+      onStatusChange={vi.fn()}
+      onAction={vi.fn()}
+    />);
+
+    expect(screen.getByRole("button", { name: "Integrate" })).toBeTruthy();
+  });
+
+  it("stops offering integration once a candidate is integrated", () => {
+    render(<KnowledgeCandidatesView
+      candidates={[{ ...candidate, status: "integrated" as const }]}
+      status="all"
+      loading={false}
+      canManage
+      onStatusChange={vi.fn()}
+      onAction={vi.fn()}
+    />);
+
+    expect(screen.queryByRole("button", { name: "Integrate" })).toBeNull();
+  });
+});
+
+describe("Knowledge Hub benchmark labeling", () => {
+  const benchmarkCase = {
+    id: "case-1",
+    sourceType: "business_owner_assistant" as const,
+    question: "Which role approves a refund?",
+    usageCount: 7,
+    expectedWorkItemId: null,
+    expectedAnswerSnippet: null,
+    firstSeenAt: "2026-01-01T00:00:00.000Z",
+    lastSeenAt: "2026-01-02T00:00:00.000Z",
+    labeledAt: null,
+    labeledBy: null,
+  };
+
+  it("cannot submit a label without an expected work item", () => {
+    // The work item id is the whole point of the label: saving a blank one would record
+    // a case the scorer can never evaluate.
+    render(<KnowledgeBenchmarkRow item={benchmarkCase} saving={false} onLabel={vi.fn()} />);
+
+    expect(screen.getByText("Which role approves a refund?")).toBeTruthy();
+    expect(screen.getByText("Asked 7x")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /save/i })).toHaveProperty("disabled", true);
+  });
+
+  it("submits the trimmed label for the case it belongs to", async () => {
+    const onLabel = vi.fn().mockResolvedValue(undefined);
+    render(<KnowledgeBenchmarkRow item={benchmarkCase} saving={false} onLabel={onLabel} />);
+
+    fireEvent.change(screen.getByLabelText(/expected work item id/i), { target: { value: "  4821  " } });
+    fireEvent.change(screen.getByLabelText(/expected answer snippet/i), { target: { value: " refunds " } });
+    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => expect(onLabel).toHaveBeenCalledWith("case-1", {
+      expectedWorkItemId: "4821",
+      expectedAnswerSnippet: "refunds",
+    }));
+  });
+
+  it("shows the recorded label instead of the form once a case is labeled", () => {
+    render(<KnowledgeBenchmarkRow
+      item={{ ...benchmarkCase, expectedWorkItemId: "4821", expectedAnswerSnippet: "refund policy" }}
+      saving={false}
+      onLabel={vi.fn()}
+    />);
+
+    expect(screen.getByText("Labeled")).toBeTruthy();
+    expect(screen.getByText("4821")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /save/i })).toBeNull();
   });
 });
 

@@ -19,6 +19,12 @@ export async function generateTestCases(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  /** Model window, so the prompt can size compiled knowledge and related context to it. */
+  maxInputTokens?: number;
+  /** Workspace retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
+  /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
+  rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
   options?: Partial<TestDesignOptions>;
   extraInstructions?: string;
@@ -26,6 +32,10 @@ export async function generateTestCases(input: {
   const scope = assertProjectScope(input.scope);
   const promptDraft = buildTestCaseGenerationPromptDraft({
     scope,
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
+    rankedKnowledgeKeys: input.rankedKnowledgeKeys,
     targetRequirement: input.targetRequirement,
     relatedWorkItems: input.relatedWorkItems ?? [],
     selectedContext: input.selectedContext,
@@ -81,6 +91,12 @@ export function buildTestCaseGenerationPromptDraft(input: {
   relatedWorkItems?: unknown[];
   selectedContext: unknown[];
   projectKnowledgeBase?: unknown | null;
+  /** Model window, so the prompt can size compiled knowledge and related context to it. */
+  maxInputTokens?: number;
+  /** Workspace retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
+  /** Semantic ordering of knowledge entries; overrides keyword ranking when supplied. */
+  rankedKnowledgeKeys?: Record<string, string[]>;
   projectKnowledgeNotice?: string | null;
   options?: Partial<TestDesignOptions>;
   extraInstructions?: string;
@@ -89,6 +105,10 @@ export function buildTestCaseGenerationPromptDraft(input: {
   const testDesignOptions = normalizeTestDesignOptions(input.options);
   const systemPrompt = buildTestCaseGenerationSystemPrompt(input.options);
   const promptPayload = buildTestCaseGenerationMarkdownPrompt({
+    // Sizes how much compiled knowledge and related context the prompt carries.
+    maxInputTokens: input.maxInputTokens,
+    relatedWorkItemsFloor: input.relatedWorkItemsFloor,
+    rankedKnowledgeKeys: input.rankedKnowledgeKeys,
     currentProject: {
       azureProjectId: scope.azureProjectId,
       azureProjectName: scope.azureProjectName,

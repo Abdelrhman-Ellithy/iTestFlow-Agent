@@ -12,7 +12,9 @@ import { AppError, AppErrorCode } from "@/modules/shared/errors/app-error";
 import {
   ProjectKnowledgeBaseSchema,
   type ProjectKnowledgeBase,
+  type ProjectKnowledgeChatInsight,
 } from "./project-knowledge.schema";
+import { CHAT_INSIGHT_CATEGORY } from "./context-chatbot-retrieval.service";
 import {
   buildProjectKnowledgeCitationSources,
   generatedProjectKnowledgeForOmissions,
@@ -508,12 +510,64 @@ export async function getProjectKnowledgeBaseSnapshot(input: { scope: ProjectSco
   return row ? toProjectKnowledgeSnapshot(row) : null;
 }
 
+/**
+ * Approved chat insights, read directly from `project_knowledge_entries` rather than
+ * from the compiled snapshot. Kept out of `project_knowledge_base.validated_output` on
+ * purpose: that column is wholesale replaced by every publish, and an insight has to
+ * survive a knowledge republish precisely because it was never part of what the compiler
+ * produced (see `indexApprovedChatInsight`'s doc comment). Merging it in here, at read
+ * time, is what makes it visible to the workflow prompts that consume this function's
+ * return value -- without this, `integrateProjectKnowledgeCandidate`'s own stated intent
+ * ("so a saved chatbot answer can inform later answers and workflow prompts") only ever
+ * held for the Business Owner Assistant, which reads project_knowledge_entries directly;
+ * every workflow prompt builder reads only the compiled snapshot and never saw one.
+ */
+async function loadIntegratedChatInsights(scope: ProjectScope): Promise<ProjectKnowledgeChatInsight[]> {
+  const rows = await sqlAll<{
+    entry_key: string;
+    title: string;
+    content: string;
+    source_work_item_ids: string;
+    evidence: string;
+  }>(
+    `
+      SELECT entry_key, title, content, source_work_item_ids, evidence
+      FROM project_knowledge_entries
+      WHERE project_id = @projectId
+        AND azure_project_id = @azureProjectId
+        AND category = @category
+      ORDER BY entry_key
+    `,
+    { projectId: scope.projectId, azureProjectId: scope.azureProjectId, category: CHAT_INSIGHT_CATEGORY },
+  );
+  return rows.map((row) => ({
+    id: row.entry_key,
+    title: row.title,
+    content: row.content,
+    sourceWorkItemIds: row.source_work_item_ids
+      ? row.source_work_item_ids.split(",").map((id) => id.trim()).filter(Boolean)
+      : [],
+    evidence: row.evidence,
+  }));
+}
+
 export async function loadProjectKnowledgeContext(input: {
   scope: ProjectScope;
   consumer?: string;
 }): Promise<ProjectKnowledgeConsumerContext> {
+  const scope = assertProjectScope(input.scope);
+  const chatInsights = await loadIntegratedChatInsights(scope);
   const snapshot = await getProjectKnowledgeBaseSnapshot(input);
-  if (!snapshot) return { knowledgeBase: null, health: null, usage: "raw_only", promptNotice: null };
+  if (!snapshot) {
+    return {
+      knowledgeBase: chatInsights.length
+        ? { modules: [], businessRules: [], stateTransitions: [], glossary: [], crossDependencies: [], chatInsights }
+        : null,
+      health: null,
+      usage: "raw_only",
+      promptNotice: null,
+    };
+  }
   const usage = snapshot.health.trustedCompiledRetrieval ? "trusted_compiled" as const : "raw_wins" as const;
   const promptNotice = snapshot.health.rawContextRequired
     ? [
@@ -538,7 +592,12 @@ export async function loadProjectKnowledgeContext(input: {
       },
     });
   }
-  return { knowledgeBase: snapshot.knowledgeBase, health: snapshot.health, usage, promptNotice };
+  return {
+    knowledgeBase: { ...snapshot.knowledgeBase, chatInsights },
+    health: snapshot.health,
+    usage,
+    promptNotice,
+  };
 }
 
 export async function getSavedProjectKnowledgeBase(input: { scope: ProjectScope; consumer?: string }) {
@@ -874,17 +933,23 @@ function selectProjectKnowledgeWorkItemsFromSnapshotTimestamp(input: {
   workItems: ProjectKnowledgeWorkItem[];
 }): ProjectKnowledgeWorkItemSelection {
   const extractedAtMs = Date.parse(input.existingSnapshot.extractedAt);
-  const changedSourceWorkItemIds = Number.isFinite(extractedAtMs)
-    ? input.workItems
-        .filter((item) => {
-          const updatedAtMs = Date.parse(item.updatedDate ?? "");
-          return Number.isFinite(updatedAtMs) && updatedAtMs > extractedAtMs;
-        })
-        .map((item) => item.id)
-    : [];
+  const knownSourceWorkItemIds = new Set(getKnowledgeSourceWorkItemIds(input.existingSnapshot.knowledgeBase));
+  const changedSourceWorkItemIds = input.workItems
+    .filter((item) => {
+      // Never cited as a source in the existing knowledge base -- always changed,
+      // regardless of its Azure DevOps updatedDate. Otherwise a work item that's
+      // simply old and untouched but newly in scope (e.g. after widening a fetch
+      // limit or filter) would look "unchanged" purely because its updatedDate
+      // predates the last extraction, even though it has never actually been
+      // compiled into knowledge at all.
+      if (!knownSourceWorkItemIds.has(item.id)) return true;
+      if (!Number.isFinite(extractedAtMs)) return false;
+      const updatedAtMs = Date.parse(item.updatedDate ?? "");
+      return Number.isFinite(updatedAtMs) && updatedAtMs > extractedAtMs;
+    })
+    .map((item) => item.id);
   const activeSourceIds = new Set(input.workItems.map((item) => item.id));
-  const retiredSourceWorkItemIds = getKnowledgeSourceWorkItemIds(input.existingSnapshot.knowledgeBase)
-    .filter((sourceId) => !activeSourceIds.has(sourceId));
+  const retiredSourceWorkItemIds = Array.from(knownSourceWorkItemIds).filter((sourceId) => !activeSourceIds.has(sourceId));
   const affectedSourceWorkItemIds = Array.from(new Set([...changedSourceWorkItemIds, ...retiredSourceWorkItemIds]));
 
   return {

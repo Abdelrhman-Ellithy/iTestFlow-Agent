@@ -2,15 +2,18 @@ import { afterAll, beforeAll, expect, it, vi } from "vitest";
 
 import {
   flushBackgroundWrites,
+  getPool,
   resetDatabaseForTests,
   sqlAll,
   sqlGet,
   sqlRun,
 } from "@/modules/shared/infrastructure/database/db";
 import {
+  advisoryLockKeyForProject,
   getRecentProjectContext,
   indexAzureWorkItemsAsProjectContext,
   retrieveStoredProjectContext,
+  withEmbeddingSyncLock,
 } from "@/modules/rag/project-context-store.service";
 import type { ProjectScope } from "@/modules/projects/project-isolation.guard";
 import type { Requirement } from "@/modules/integrations/azure-devops/azure-devops-types";
@@ -23,6 +26,7 @@ const WS = uniqueTestId("ws_ctxstore");
 const ORG = `https://dev.azure.com/${WS}`;
 const PROJ_A = uniqueTestId("az_ctxstore_a");
 const PROJ_B = uniqueTestId("az_ctxstore_b");
+const PROJ_C = uniqueTestId("az_ctxstore_c");
 
 const scopeA: ProjectScope = {
   projectId: PROJ_A,
@@ -34,6 +38,15 @@ const scopeB: ProjectScope = {
   projectId: PROJ_B,
   azureProjectId: PROJ_B,
   azureProjectName: "Context Store B",
+  azureOrganizationUrl: ORG,
+};
+// Dedicated project for tests that don't belong to project A's carefully sequenced
+// sync-lifecycle narrative (see the describeDb comment below) — keeps them from
+// perturbing that scope's snapshot/revision history.
+const scopeC: ProjectScope = {
+  projectId: PROJ_C,
+  azureProjectId: PROJ_C,
+  azureProjectName: "Context Store C",
   azureOrganizationUrl: ORG,
 };
 
@@ -102,6 +115,7 @@ async function sync(scope: ProjectScope, items: Requirement[]) {
     adapter: fakeAzureAdapter({ fetchWorkItems: vi.fn(async () => items) }),
     workItemTypes: ["User Story"],
     states: ["Active"],
+    embeddingProvider: null,
   });
 }
 
@@ -166,6 +180,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     await seedWorkspace({ id: WS, orgUrl: ORG });
     await seedProject({ workspaceId: WS, orgUrl: ORG, azureProjectId: PROJ_A, azureProjectName: "Context Store A" });
     await seedProject({ workspaceId: WS, orgUrl: ORG, azureProjectId: PROJ_B, azureProjectName: "Context Store B" });
+    await seedProject({ workspaceId: WS, orgUrl: ORG, azureProjectId: PROJ_C, azureProjectName: "Context Store C" });
   });
 
   afterAll(async () => {
@@ -173,7 +188,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     // projects still exist, then delete feature rows before cleanupFixtures can
     // trip on their workspace_id FKs.
     await flushBackgroundWrites();
-    for (const projectId of [PROJ_A, PROJ_B]) {
+    for (const projectId of [PROJ_A, PROJ_B, PROJ_C]) {
       await sqlRun(`DELETE FROM document_chunks_fts WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM document_chunks WHERE project_id = @projectId`, { projectId });
       await sqlRun(`DELETE FROM azure_devops_work_items WHERE project_id = @projectId`, { projectId });
@@ -192,6 +207,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       adapter: fakeAzureAdapter({ fetchWorkItems }),
       workItemTypes: ["User Story"],
       states: ["Active"],
+    embeddingProvider: null,
     });
 
     // The adapter is queried with the scope's Azure project, never a raw client value.
@@ -208,7 +224,10 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       unchangedCount: 0,
       inactiveCount: 0,
       indexedWorkItemCount: 3,
-      indexedChunkCount: 3,
+      // Each fixture has both a description and acceptance criteria, so field-aware
+      // chunking produces two chunks per item (a core unit and an
+      // acceptance_criteria unit) -- 6 chunks across the three items, not 3.
+      indexedChunkCount: 6,
       skippedEmptyCount: 0,
     });
 
@@ -218,9 +237,12 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     expect(rows.every((row) => Boolean(row.content_hash))).toBe(true);
     expect(rows.every((row) => Boolean(row.current_snapshot_id))).toBe(true);
 
-    // Short work items land as exactly one chunk each, keyed to their work item.
+    // Each fixture has a description and acceptance criteria, so field-aware
+    // chunking lands two chunks per work item, keyed to that work item.
     const chunks = await chunkRows(PROJ_A);
-    expect(chunks.map((chunk) => chunk.azure_work_item_id).sort()).toEqual(["101", "102", "103"]);
+    expect(chunks.map((chunk) => chunk.azure_work_item_id).sort()).toEqual([
+      "101", "101", "102", "102", "103", "103",
+    ]);
     expect(chunks.every((chunk) => Boolean(chunk.source_snapshot_id))).toBe(true);
 
     const snapshots = await sqlAll<{ azure_work_item_id: string; ado_revision: number; fields_json: unknown }>(
@@ -342,6 +364,32 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     expect(chunk?.content).toContain("approves the card");
   });
 
+  it("keeps items active when the fetch hit its limit and may be truncated", async () => {
+    // Regression for the highest-impact retrieval defect found in this codebase: with a
+    // capped fetch ordered most-recently-changed first, every previously indexed item
+    // outside the window was marked inactive on each sync — and all retrieval filters on
+    // sync_status='active'. On a real 1,085-item project that left 885 items (82%)
+    // indexed but permanently unsearchable.
+    //
+    // A truncated fetch cannot distinguish "left scope" from "beyond the window", so it
+    // must not retire anything. Here limit=1 returns 1 item, so the other two must stay
+    // active despite being absent from the results.
+    const result = await indexAzureWorkItemsAsProjectContext({
+      scope: scopeA,
+      actor: "db-test",
+      adapter: fakeAzureAdapter({ fetchWorkItems: vi.fn(async () => [checkoutItem()]) }),
+      workItemTypes: ["User Story"],
+      states: ["Active"],
+      limit: 1,
+      embeddingProvider: null,
+    });
+
+    expect(result).toMatchObject({ inactiveCount: 0 });
+    const rows = await workItemRows(PROJ_A);
+    expect(rows.filter((row) => row.sync_status === "active").map((row) => row.azure_work_item_id).sort())
+      .toEqual(["101", "102", "103"]);
+  });
+
   it("items missing from the batch flip to inactive; the active set is exactly the survivors", async () => {
     const result = await sync(scopeA, [refundItem(), rolloutItem()]);
     expect(result).toMatchObject({ createdCount: 0, updatedCount: 0, unchangedCount: 2, inactiveCount: 1 });
@@ -352,13 +400,15 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     expect(rows.filter((row) => row.sync_status === "active").map((row) => row.azure_work_item_id)).toEqual(["102", "103"]);
     expect(rows.find((row) => row.azure_work_item_id === "101")?.sync_status).toBe("inactive");
 
-    // The inactive item's chunk stays on disk but stops feeding retrieval and listing.
+    // The inactive item's chunks stay on disk but stop feeding retrieval and listing.
+    // checkoutItem (101) has both a description and acceptance criteria, so
+    // field-aware chunking leaves it with two orphaned chunks, not one.
     const orphanChunks = await sqlGet<{ count: number }>(
       `SELECT COUNT(*)::int AS count FROM document_chunks WHERE project_id = @projectId AND azure_work_item_id = '101'`,
       { projectId: PROJ_A },
     );
-    expect(orphanChunks?.count).toBe(1);
-    expect(await retrieveStoredProjectContext({ scope: scopeA, query: "payment gateway" })).toEqual([]);
+    expect(orphanChunks?.count).toBe(2);
+    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "payment gateway", embeddingProvider: null })).toEqual([]);
 
     const recent = await getRecentProjectContext({ scope: scopeA });
     expect(recent.totalCount).toBe(2);
@@ -374,7 +424,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     const rows = await workItemRows(PROJ_A);
     expect(rows.filter((row) => row.sync_status === "active").map((row) => row.azure_work_item_id)).toEqual(["101", "102", "103"]);
 
-    const sources = await retrieveStoredProjectContext({ scope: scopeA, query: "payment gateway" });
+    const sources = await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "payment gateway", embeddingProvider: null });
     expect(sources.map((source) => source.workItemId)).toEqual(["101"]);
   });
 
@@ -382,14 +432,14 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     const result = await sync(scopeB, [telemetryItem()]);
     expect(result).toMatchObject({ createdCount: 1 });
 
-    const fromB = await retrieveStoredProjectContext({ scope: scopeB, query: "zebra telemetry ingest" });
+    const fromB = await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeB, query: "zebra telemetry ingest", embeddingProvider: null });
     expect(fromB).toHaveLength(1);
     expect(fromB[0]).toMatchObject({ workItemId: "101", title: "Telemetry pipeline" });
     expect(fromB[0]?.content).toContain("zebra");
 
     // No leakage in either direction, even though both projects hold an item "101".
-    expect(await retrieveStoredProjectContext({ scope: scopeA, query: "zebra telemetry ingest" })).toEqual([]);
-    expect(await retrieveStoredProjectContext({ scope: scopeB, query: "payment gateway" })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "zebra telemetry ingest", embeddingProvider: null })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeB, query: "payment gateway", embeddingProvider: null })).toEqual([]);
 
     const recentA = await getRecentProjectContext({ scope: scopeA });
     expect(recentA.totalCount).toBe(3);
@@ -419,6 +469,99 @@ describeDb("project context store sync state machine (DB-backed)", () => {
     expect(wildcards.items).toEqual([]);
   });
 
+  it("ranks chunks matching more query terms above weaker matches with 0..1 bounded scores", async () => {
+    // 102 matches refund + delivered + order; 101 matches only "checkout"; 103 matches nothing.
+    const sources = await retrieveStoredProjectContext({
+      rerankProvider: null,
+      scope: scopeA,
+      query: "refund delivered order checkout",
+      embeddingProvider: null,
+    });
+
+    expect(sources.map((source) => source.workItemId)).toEqual(["102", "101"]);
+    expect(sources[0]?.relevanceScore).toBe(1);
+    for (const source of sources) {
+      expect(source.relevanceScore).toBeGreaterThan(0);
+      expect(source.relevanceScore).toBeLessThanOrEqual(1);
+    }
+    expect(sources[0]!.relevanceScore).toBeGreaterThanOrEqual(sources[1]!.relevanceScore);
+  });
+
+  it("returns nothing for empty or unmatched queries instead of scanning the corpus", async () => {
+    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "", embeddingProvider: null })).toEqual([]);
+    // Every term is 2 chars or fewer, so the built tsquery is empty.
+    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "zz qq ab", embeddingProvider: null })).toEqual([]);
+    expect(await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeA, query: "nonexistentterm", embeddingProvider: null })).toEqual([]);
+  });
+
+  it("explicit workItemIds fetch returns those items regardless of query match, scored 1", async () => {
+    const sources = await retrieveStoredProjectContext({
+      rerankProvider: null,
+      scope: scopeA,
+      query: "words matching nothing indexed",
+      workItemIds: ["102"],
+    });
+    // refundItem (102) has both a description and acceptance criteria, so
+    // field-aware chunking returns two chunks -- one source per chunk, both scored 1.
+    expect(sources.map((source) => source.workItemId)).toEqual(["102", "102"]);
+    expect(sources.every((source) => source.relevanceScore === 1)).toBe(true);
+  });
+
+  it("caps retrieval at one chunk per work item so a verbose item cannot crowd out weaker matches", async () => {
+    const longInventory = requirement({
+      id: "104",
+      azureProjectId: PROJ_C,
+      title: "Inventory sync",
+      description: "Inventory warehouse reconciliation keeps counts aligned. ".repeat(100),
+      acceptanceCriteria: "Given warehouse stock, when inventory syncs, then reconcile counts.",
+      tags: [],
+    });
+    const shortInventory = requirement({
+      id: "105",
+      azureProjectId: PROJ_C,
+      title: "Shelf counter",
+      description: "Track inventory counts for each shelf.",
+      acceptanceCriteria: "Given a shelf, when counts change, then update the display.",
+      tags: [],
+    });
+    await sync(scopeC, [longInventory, shortInventory]);
+
+    // The long item must genuinely span multiple chunks for this test to prove anything.
+    const chunks104 = (await chunkRows(PROJ_C)).filter((chunk) => chunk.azure_work_item_id === "104");
+    expect(chunks104.length).toBeGreaterThan(1);
+
+    // Every 104 chunk matches both terms strongly; 105 matches only "inventory". Without
+    // the per-work-item cap, 104's chunks would fill the result before 105 appears.
+    const sources = await retrieveStoredProjectContext({ rerankProvider: null, scope: scopeC, query: "inventory warehouse", embeddingProvider: null });
+    expect(sources.map((source) => source.workItemId)).toEqual(["104", "105"]);
+  });
+
+  it("skips embedding sync work when another sync already holds the project's advisory lock", async () => {
+    const lockTestProjectId = uniqueTestId("lock_project");
+    const [key1, key2] = advisoryLockKeyForProject(lockTestProjectId);
+    const holderClient = await getPool().connect();
+    try {
+      const held = await sqlGet<{ locked: boolean }>(
+        "SELECT pg_try_advisory_lock(@key1, @key2) AS locked",
+        { key1, key2 },
+        holderClient,
+      );
+      expect(held?.locked).toBe(true);
+
+      const fn = vi.fn(async () => "should not run");
+      const outcome = await withEmbeddingSyncLock(lockTestProjectId, fn);
+      expect(outcome).toEqual({ acquired: false });
+      expect(fn).not.toHaveBeenCalled();
+    } finally {
+      await sqlRun("SELECT pg_advisory_unlock(@key1, @key2)", { key1, key2 }, holderClient);
+      holderClient.release();
+    }
+
+    // Once released, the next call proceeds and runs fn normally.
+    const outcome = await withEmbeddingSyncLock(lockTestProjectId, async () => "ran");
+    expect(outcome).toEqual({ acquired: true, result: "ran" });
+  });
+
   it("rebuild replaces the current source set but preserves immutable snapshot history", async () => {
     const beforeSnapshots = await sqlAll<{ id: string }>(
       `SELECT id FROM azure_devops_work_item_snapshots WHERE project_id = @projectId ORDER BY id`,
@@ -431,6 +574,7 @@ describeDb("project context store sync state machine (DB-backed)", () => {
       workItemTypes: ["User Story"],
       states: ["Active"],
       mode: "rebuild",
+    embeddingProvider: null,
     });
 
     expect(result).toMatchObject({ mode: "rebuild", fetchedCount: 2, createdCount: 2 });

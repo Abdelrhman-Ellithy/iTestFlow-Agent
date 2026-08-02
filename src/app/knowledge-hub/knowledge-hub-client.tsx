@@ -17,6 +17,7 @@ import {
   SearchX,
   Send,
   ShieldCheck,
+  Target,
   type LucideIcon,
 } from "lucide-react"
 
@@ -29,6 +30,13 @@ import { patchJson, postJson } from "@/components/workflow/post-json"
 import { useUnsavedChangesGuard } from "@/components/navigation/unsaved-changes-provider"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Textarea } from "@/components/ui/textarea"
 import {
@@ -41,6 +49,8 @@ import {
 } from "@/components/ui/table"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
+  CONTEXT_FETCH_LIMIT_OPTIONS,
+  DEFAULT_CONTEXT_FETCH_LIMIT,
   DEFAULT_CONTEXT_STATES,
   DEFAULT_CONTEXT_WORK_ITEM_TYPES,
 } from "@/lib/project-context-defaults"
@@ -234,7 +244,7 @@ type KnowledgeExportResult = {
 type TopTab = "hub" | "build"
 type WorkspaceRole = "owner" | "admin" | "member"
 type HubView = "explorer" | "context" | "candidates"
-type KnowledgeCandidateStatus = "legacy_ungrounded" | "grounded" | "rejected" | "integration_requested"
+type KnowledgeCandidateStatus = "legacy_ungrounded" | "grounded" | "rejected" | "integration_requested" | "integrated"
 
 type KnowledgeCandidate = {
   id: string
@@ -246,6 +256,19 @@ type KnowledgeCandidate = {
   citations: unknown[]
   rejectedReason?: string | null
   updatedAt: string
+}
+
+type KnowledgeBenchmarkCase = {
+  id: string
+  sourceType: "qa" | "business_owner_assistant"
+  question: string
+  usageCount: number
+  firstSeenAt: string
+  lastSeenAt: string
+  expectedWorkItemId: string | null
+  expectedAnswerSnippet: string | null
+  labeledAt: string | null
+  labeledBy: string | null
 }
 
 const KNOWLEDGE_CATEGORIES = [
@@ -293,6 +316,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [hubView, setHubView] = useState<HubView>("explorer")
   const [workItemTypes, setWorkItemTypes] = useState<string[]>(DEFAULT_CONTEXT_WORK_ITEM_TYPES)
   const [states, setStates] = useState<string[]>(DEFAULT_CONTEXT_STATES)
+  const [fetchLimit, setFetchLimit] = useState<number>(DEFAULT_CONTEXT_FETCH_LIMIT)
   const [buildLoading, setBuildLoading] = useState(false)
   const [statusLoading, setStatusLoading] = useState(false)
   const [contextLoadingMore, setContextLoadingMore] = useState(false)
@@ -318,6 +342,10 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
   const [knowledgeCandidates, setKnowledgeCandidates] = useState<KnowledgeCandidate[]>([])
   const [candidateStatus, setCandidateStatus] = useState<KnowledgeCandidateStatus | "all">("all")
   const [candidateLoading, setCandidateLoading] = useState(false)
+  const [knowledgeBenchmark, setKnowledgeBenchmark] = useState<KnowledgeBenchmarkCase[]>([])
+  const [knowledgeBenchmarkVisible, setKnowledgeBenchmarkVisible] = useState(false)
+  const [knowledgeBenchmarkLoading, setKnowledgeBenchmarkLoading] = useState(false)
+  const [knowledgeBenchmarkLabelingId, setKnowledgeBenchmarkLabelingId] = useState<string | null>(null)
   const [page, setPage] = useState(1)
   const [pageSize] = useState(25)
   const [totalPages, setTotalPages] = useState(1)
@@ -388,6 +416,19 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       setCandidateLoading(false)
     }
   }, [candidateStatus, scope])
+
+  const refreshKnowledgeBenchmark = useCallback(async (activeScope: ActiveProjectScope | null = scope) => {
+    if (!activeScope) return
+    setKnowledgeBenchmarkLoading(true)
+    try {
+      const data = await postJson<{ cases: KnowledgeBenchmarkCase[] }>("/api/context/knowledge/benchmark", { scope: activeScope })
+      setKnowledgeBenchmark(data.cases)
+    } catch {
+      setKnowledgeBenchmark([])
+    } finally {
+      setKnowledgeBenchmarkLoading(false)
+    }
+  }, [scope])
 
   const loadStatus = useCallback(async (
     activeScope: ActiveProjectScope | null,
@@ -498,6 +539,8 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     setKnowledgeReportLoading(false)
     setKnowledgeCandidates([])
     setCandidateStatus("all")
+    setKnowledgeBenchmark([])
+    setKnowledgeBenchmarkVisible(false)
     setPage(1)
     setSortBy("lastIndexedAt")
     setSortDirection("desc")
@@ -568,6 +611,12 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
     invalidateBuildIndex()
   }
 
+  function changeFetchLimit(value: number) {
+    setHasUnfinishedWork(true)
+    setFetchLimit(value)
+    invalidateBuildIndex()
+  }
+
   async function indexContextForBuild() {
     if (!scope) throw new Error("Select an Azure DevOps project before loading the project index.")
     const data = await postJson<IndexResult>("/api/context/index", {
@@ -575,6 +624,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
       workItemTypes,
       states,
       mode: "incremental",
+      limit: fetchLimit,
     })
     setResult(data)
     setPage(1)
@@ -634,6 +684,34 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
 
     setKnowledgeLogVisible(true)
     await refreshKnowledgeLog(scope)
+  }
+
+  async function toggleKnowledgeBenchmark() {
+    if (knowledgeBenchmarkVisible) {
+      setKnowledgeBenchmarkVisible(false)
+      return
+    }
+
+    setKnowledgeBenchmarkVisible(true)
+    await refreshKnowledgeBenchmark(scope)
+  }
+
+  async function labelKnowledgeBenchmarkCase(caseId: string, input: { expectedWorkItemId: string; expectedAnswerSnippet: string }) {
+    if (!scope || !canBuildKnowledge) return
+    setKnowledgeBenchmarkLabelingId(caseId)
+    setKnowledgeError(null)
+    try {
+      const data = await postJson<{ case: KnowledgeBenchmarkCase }>(`/api/context/knowledge/benchmark/${caseId}/label`, {
+        scope,
+        expectedWorkItemId: input.expectedWorkItemId,
+        ...(input.expectedAnswerSnippet ? { expectedAnswerSnippet: input.expectedAnswerSnippet } : {}),
+      })
+      setKnowledgeBenchmark((current) => current.map((item) => item.id === caseId ? data.case : item))
+    } catch (error) {
+      setKnowledgeError(error instanceof Error ? error.message : "The benchmark case could not be labeled.")
+    } finally {
+      setKnowledgeBenchmarkLabelingId(null)
+    }
   }
 
   async function reportKnowledgeLintMiss(input: {
@@ -820,6 +898,12 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
             onExport={exportKnowledgeWiki}
             onReportMiss={reportKnowledgeLintMiss}
             onTransitionIssue={transitionKnowledgeLintIssue}
+            benchmarkCases={knowledgeBenchmark}
+            benchmarkVisible={knowledgeBenchmarkVisible}
+            benchmarkLoading={knowledgeBenchmarkLoading}
+            benchmarkLabelingId={knowledgeBenchmarkLabelingId}
+            onToggleBenchmark={toggleKnowledgeBenchmark}
+            onLabelBenchmarkCase={labelKnowledgeBenchmarkCase}
           />
 
           {knowledgeError ? (
@@ -922,6 +1006,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                         <IndexLoadPanel
                           workItemTypes={workItemTypes}
                           states={states}
+                          fetchLimit={fetchLimit}
                           workItemTypeOptions={workItemMetadata?.workItemTypes ?? []}
                           stateOptions={workItemMetadata?.states ?? []}
                           metadataLoading={workItemMetadataLoading}
@@ -930,6 +1015,7 @@ export function KnowledgeHubClient({ workspaceRole }: { workspaceRole: Workspace
                           loading={buildLoading}
                           onWorkItemTypesChange={changeWorkItemTypes}
                           onStatesChange={changeStates}
+                          onFetchLimitChange={changeFetchLimit}
                           onRetryMetadata={retryWorkItemMetadata}
                           onLoad={loadProjectIndexForBuild}
                         />
@@ -1060,6 +1146,7 @@ function HubViewTab({
 function IndexLoadPanel({
   workItemTypes,
   states,
+  fetchLimit,
   workItemTypeOptions,
   stateOptions,
   metadataLoading,
@@ -1068,11 +1155,13 @@ function IndexLoadPanel({
   loading,
   onWorkItemTypesChange,
   onStatesChange,
+  onFetchLimitChange,
   onRetryMetadata,
   onLoad,
 }: {
   workItemTypes: string[]
   states: string[]
+  fetchLimit: number
   workItemTypeOptions: string[]
   stateOptions: string[]
   metadataLoading: boolean
@@ -1081,6 +1170,7 @@ function IndexLoadPanel({
   loading: boolean
   onWorkItemTypesChange: (values: string[]) => void
   onStatesChange: (values: string[]) => void
+  onFetchLimitChange: (value: number) => void
   onRetryMetadata: () => void
   onLoad: () => void
 }) {
@@ -1112,6 +1202,27 @@ function IndexLoadPanel({
             onRetry={onRetryMetadata}
             onChange={onStatesChange}
           />
+          <div className="space-y-1.5">
+            <Label htmlFor="context-fetch-limit">Work items to fetch</Label>
+            <Select
+              value={String(fetchLimit)}
+              onValueChange={(value) => onFetchLimitChange(Number(value))}
+            >
+              <SelectTrigger id="context-fetch-limit" className="w-full sm:w-56">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {CONTEXT_FETCH_LIMIT_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={String(option)}>
+                    Up to {option.toLocaleString()}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs leading-5 text-muted-foreground">
+              Most recently changed work items are fetched first, up to this limit.
+            </p>
+          </div>
         </div>
         <div className="rounded-md border border-border bg-muted p-3 lg:w-[360px]">
           <div className="mb-3 text-xs leading-5 text-muted-foreground">
@@ -1367,7 +1478,7 @@ export function KnowledgeCandidatesView({
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <div className="text-sm font-semibold text-foreground">Knowledge Candidates</div>
-          <div className="text-xs text-muted-foreground">Candidate answers remain non-authoritative until integrated through a reviewed draft.</div>
+          <div className="text-xs text-muted-foreground">Integrating a candidate makes it searchable by the assistant and the workflow prompts, recorded as human-approved rather than extracted-and-verified.</div>
         </div>
         <Label className="space-y-1 text-xs sm:w-56">
           <span>Status</span>
@@ -1379,7 +1490,8 @@ export function KnowledgeCandidatesView({
             <option value="all">All statuses</option>
             <option value="legacy_ungrounded">Legacy ungrounded</option>
             <option value="grounded">Grounded</option>
-            <option value="integration_requested">Integration requested</option>
+            <option value="integrated">Integrated</option>
+            <option value="integration_requested">Integration requested (legacy)</option>
             <option value="rejected">Rejected</option>
           </select>
         </Label>
@@ -1399,12 +1511,10 @@ export function KnowledgeCandidatesView({
             </details>
           ) : null}
           {candidate.rejectedReason ? <div className="mt-2 text-xs text-destructive">Rejected: {candidate.rejectedReason}</div> : null}
-          {canManage && !["rejected", "integration_requested"].includes(candidate.status) ? (
+          {canManage && !["rejected", "integration_requested", "integrated"].includes(candidate.status) ? (
             <div className="mt-3 flex justify-end gap-2">
               <Button size="sm" variant="outline" disabled={loading} onClick={() => void onAction(candidate.id, "reject")}>Reject</Button>
-              {candidate.status === "grounded" ? (
-                <Button size="sm" disabled={loading} onClick={() => void onAction(candidate.id, "request_integration")}>Request Integration</Button>
-              ) : null}
+              <Button size="sm" disabled={loading} onClick={() => void onAction(candidate.id, "request_integration")}>Integrate</Button>
             </div>
           ) : null}
         </div>
@@ -1428,6 +1538,12 @@ export function KnowledgeOpsPanel({
   onExport,
   onReportMiss,
   onTransitionIssue,
+  benchmarkCases,
+  benchmarkVisible,
+  benchmarkLoading,
+  benchmarkLabelingId,
+  onToggleBenchmark,
+  onLabelBenchmarkCase,
 }: {
   lint: KnowledgeLintResult | null
   logItems: KnowledgeLogItem[]
@@ -1443,6 +1559,12 @@ export function KnowledgeOpsPanel({
   onExport: () => void
   onReportMiss: (input: { missType: "duplicate" | "conflict"; title: string; message: string }) => Promise<boolean>
   onTransitionIssue: (issueId: string, action: "confirm" | "reject" | "ignore" | "reopen") => Promise<void>
+  benchmarkCases: KnowledgeBenchmarkCase[]
+  benchmarkVisible: boolean
+  benchmarkLoading: boolean
+  benchmarkLabelingId: string | null
+  onToggleBenchmark: () => void
+  onLabelBenchmarkCase: (caseId: string, input: { expectedWorkItemId: string; expectedAnswerSnippet: string }) => Promise<void>
 }) {
   const [missType, setMissType] = useState<"duplicate" | "conflict">("duplicate")
   const [missTitle, setMissTitle] = useState("")
@@ -1482,6 +1604,13 @@ export function KnowledgeOpsPanel({
             <span className="sm:hidden">{logVisible ? "Hide" : "Log"}</span>
             <span className="hidden sm:inline">{logVisible ? "Hide Log" : "Log"}</span>
           </Button>
+          {canManage ? (
+            <Button variant={benchmarkVisible ? "secondary" : "outline"} size="sm" onClick={onToggleBenchmark} disabled={benchmarkLoading} aria-expanded={benchmarkVisible}>
+              {benchmarkLoading ? <RefreshCw className="size-4 animate-spin" /> : <Target className="size-4" />}
+              <span className="sm:hidden">{benchmarkVisible ? "Hide" : "Benchmark"}</span>
+              <span className="hidden sm:inline">{benchmarkVisible ? "Hide Benchmark" : "Benchmark"}</span>
+            </Button>
+          ) : null}
           {canManage ? (
             <Button variant="outline" size="sm" onClick={onExport} disabled={exportLoading}>
               {exportLoading ? <RefreshCw className="size-4 animate-spin" /> : <Download className="size-4" />}
@@ -1661,7 +1790,92 @@ export function KnowledgeOpsPanel({
           )}
         </div>
       ) : null}
+
+      {benchmarkVisible && canManage ? (
+        <div className="space-y-2">
+          <div className="text-xs font-semibold uppercase text-muted-foreground">Retrieval Benchmark</div>
+          <p className="text-xs text-muted-foreground">
+            Real questions collected from the Business Owner Assistant, ranked by how often they were asked. Label
+            the work item each question should retrieve, then run <span className="font-mono">npm run benchmark:run</span> to
+            score retrieval against them.
+          </p>
+          {benchmarkLoading ? (
+            <KnowledgeLoadingState label="Loading retrieval benchmark cases" compact />
+          ) : benchmarkCases.length ? (
+            benchmarkCases.map((item) => (
+              <KnowledgeBenchmarkRow
+                key={item.id}
+                item={item}
+                saving={benchmarkLabelingId === item.id}
+                onLabel={onLabelBenchmarkCase}
+              />
+            ))
+          ) : (
+            <div className="rounded-md border border-border bg-muted p-3 text-sm text-muted-foreground">
+              No business-owner questions have been collected for this project yet.
+            </div>
+          )}
+        </div>
+      ) : null}
     </section>
+  )
+}
+
+export function KnowledgeBenchmarkRow({
+  item,
+  saving,
+  onLabel,
+}: {
+  item: KnowledgeBenchmarkCase
+  saving: boolean
+  onLabel: (caseId: string, input: { expectedWorkItemId: string; expectedAnswerSnippet: string }) => Promise<void>
+}) {
+  const [expectedWorkItemId, setExpectedWorkItemId] = useState("")
+  const [expectedAnswerSnippet, setExpectedAnswerSnippet] = useState("")
+  const labeled = Boolean(item.expectedWorkItemId)
+
+  return (
+    <div className="rounded-md border border-border bg-card p-3 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="outline">{item.sourceType === "business_owner_assistant" ? "Assistant" : "QA"}</Badge>
+        <Badge variant="secondary">Asked {item.usageCount}x</Badge>
+        {labeled ? <Badge variant="outline">Labeled</Badge> : null}
+      </div>
+      <div className="mt-2 text-foreground">{item.question}</div>
+      {labeled ? (
+        <div className="mt-2 text-xs text-muted-foreground">
+          Expected work item <span className="font-mono">{item.expectedWorkItemId}</span>
+          {item.expectedAnswerSnippet ? <> — {item.expectedAnswerSnippet}</> : null}
+        </div>
+      ) : (
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+          <Input
+            value={expectedWorkItemId}
+            onChange={(event) => setExpectedWorkItemId(event.target.value)}
+            placeholder="Expected work item ID"
+            disabled={saving}
+            className="sm:w-48"
+            aria-label={`Expected work item ID for benchmark case ${item.id}`}
+          />
+          <Input
+            value={expectedAnswerSnippet}
+            onChange={(event) => setExpectedAnswerSnippet(event.target.value)}
+            placeholder="Expected answer snippet (optional)"
+            disabled={saving}
+            className="sm:flex-1"
+            aria-label={`Expected answer snippet for benchmark case ${item.id}`}
+          />
+          <Button
+            size="sm"
+            disabled={saving || !expectedWorkItemId.trim()}
+            onClick={() => void onLabel(item.id, { expectedWorkItemId: expectedWorkItemId.trim(), expectedAnswerSnippet: expectedAnswerSnippet.trim() })}
+          >
+            {saving ? <RefreshCw className="size-4 animate-spin" /> : <Check className="size-4" />}
+            Save
+          </Button>
+        </div>
+      )}
+    </div>
   )
 }
 

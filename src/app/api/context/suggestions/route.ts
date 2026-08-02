@@ -11,7 +11,7 @@ import { writeGenerationFailureAudit } from "@/modules/audit/generation-failure-
 import { suggestContextStories } from "@/modules/context-selection/context-selection.service";
 import { getContextSuggestionCandidatePoolSize, getContextSuggestionFinalLimit } from "@/modules/context-selection/context-suggestion-sizing";
 import { requirementToRetrievalQuery, retrieveStoredProjectContext, type LlmContextSource } from "@/modules/rag/project-context-store.service";
-import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
 import { resolveProjectScope } from "@/modules/projects/workspace-projects.service";
 import { routeErrorResponse } from "@/modules/shared/errors/route-error-response";
 
@@ -42,7 +42,12 @@ export async function POST(request: Request) {
       projectId: trustedScope.azureProjectId,
       workItemId: parsed.data.targetWorkItemId,
     });
-    const retrievalTopK = getContextSuggestionFinalLimit(await getRetrievalTopK(ctx.workspace.id));
+    const retrievalTopK = getContextSuggestionFinalLimit(
+      await resolveRetrievalTopK({
+        workspaceId: ctx.workspace.id,
+        query: `${targetRequirement.title}\n${targetRequirement.description ?? ""}`,
+      }),
+    );
     const candidatePoolSize = getContextSuggestionCandidatePoolSize(retrievalTopK);
     const storedContext = distinctContextByWorkItem(
       (await retrieveStoredProjectContext({

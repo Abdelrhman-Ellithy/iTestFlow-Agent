@@ -7,7 +7,8 @@ import {
   requireWorkflowContext,
 } from "@/modules/credentials/scoped-resolution.service";
 import { ProjectScopeSchema } from "@/modules/projects/project-isolation.guard";
-import { getRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { resolveRetrievalTopK } from "@/modules/rag/retrieval-config";
+import { getWorkspaceSettings } from "@/modules/workspace/workspace-settings.service";
 import { loadTestExecutionEffortData } from "@/modules/test-execution-effort/test-execution-effort.data-loader";
 import {
   buildTestExecutionEffortPreview,
@@ -51,13 +52,21 @@ export async function POST(request: Request) {
       adapter,
       storyId: parsed.data.storyId,
       selectedContextIds: parsed.data.selectedContextIds,
-      retrievalTopK: await getRetrievalTopK(ctx.workspace.id),
+      retrievalTopK: await resolveRetrievalTopK({ workspaceId: ctx.workspace.id, query: "" }),
     });
     const preview = buildTestExecutionEffortPreview({
       targetRequirement: data.targetRequirement,
       linkedTestCases: data.linkedTestCases,
       hasProjectContext: data.hasProjectContext,
     });
+    // The prompt a user copies out has to be the prompt the internal run would build.
+    // Without these three it silently fell back to keyword-only knowledge ranking and a
+    // hardcoded related-items floor, so "prepare the prompt" and "run it here" produced
+    // materially different context for the same work item, with nothing saying so.
+    // There is no LLM provider on this path, so the model window comes from the
+    // workspace's configured override — the admin's own statement of what their models
+    // accept — rather than a fixed fallback.
+    const workspaceSettings = await getWorkspaceSettings(ctx.workspace.id);
     const draft = buildTestExecutionEffortPromptDraft({
       scope: trustedScope,
       targetRequirement: data.targetRequirement,
@@ -66,6 +75,9 @@ export async function POST(request: Request) {
       selectedContext: data.selectedContext,
       projectKnowledgeBase: data.projectKnowledgeBase,
       projectKnowledgeNotice: data.projectKnowledgeNotice,
+      maxInputTokens: workspaceSettings?.modelInputTokenLimitOverride ?? undefined,
+      relatedWorkItemsFloor: data.retrievalTopK,
+      rankedKnowledgeKeys: data.rankedKnowledgeKeys ?? undefined,
       options,
     });
     const contextCitations = buildWorkflowContextCitations({

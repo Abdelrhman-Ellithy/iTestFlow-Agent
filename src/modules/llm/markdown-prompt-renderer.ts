@@ -1,5 +1,7 @@
 import "server-only";
 
+import { estimateTokens, usableInputTokens } from "./token-estimate";
+
 import type { NormalizedTestDesignOptions } from "@/modules/test-case-design/test-design-options";
 import type { ProjectKnowledgeBase } from "@/modules/rag/project-knowledge.schema";
 import type { LlmContextSource } from "@/modules/rag/project-context-store.service";
@@ -19,19 +21,36 @@ type MarkdownPromptInput = {
   projectKnowledgeNotice?: string | null;
   extraInstructions?: string;
   outputContract: unknown;
+  /** The caller's configured model window; sizes how much context is included. */
+  maxInputTokens?: number;
+  /** The workspace's retrieval top-K, honoured as a floor for related work items. */
+  relatedWorkItemsFloor?: number;
+  /** Semantic ordering for knowledge entries; overrides keyword ranking when supplied. */
+  rankedKnowledgeKeys?: Partial<Record<
+    "modules" | "businessRules" | "stateTransitions" | "glossary" | "crossDependencies" | "chatInsights",
+    string[]
+  >>;
 };
 
 export function buildRequirementAnalysisMarkdownPrompt(input: MarkdownPromptInput) {
+  const relatedWorkItems = selectRelatedWorkItemsWithinBudget({
+    relatedWorkItems: input.relatedWorkItems ?? [],
+    floor: input.relatedWorkItemsFloor ?? DEFAULT_RELATED_ITEMS_FLOOR,
+    maxInputTokens: input.maxInputTokens,
+  });
   const relevantKnowledge = selectRelevantProjectKnowledge({
+    maxInputTokens: input.maxInputTokens,
+    weighting: "requirementAnalysis",
+    rankedOverride: input.rankedKnowledgeKeys,
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
       stringifyForPromptSearch(input.targetRequirement),
-      stringifyForPromptSearch(input.relatedWorkItems ?? []),
+      stringifyForPromptSearch(relatedWorkItems),
       stringifyForPromptSearch(input.selectedContext ?? []),
     ].join("\n"),
     prioritySourceIds: [
       extractWorkItemId(input.targetRequirement),
-      ...extractWorkItemIds(input.relatedWorkItems ?? []),
+      ...extractWorkItemIds(relatedWorkItems),
       ...extractWorkItemIds(input.selectedContext ?? []),
     ].filter(Boolean) as string[],
   });
@@ -40,7 +59,7 @@ export function buildRequirementAnalysisMarkdownPrompt(input: MarkdownPromptInpu
     prompt: [
       renderCurrentProject(input.currentProject),
       renderTargetWorkItem("User Story Under Analysis", input.targetRequirement),
-      renderWorkItemCollection("Related Work Items", input.relatedWorkItems ?? []),
+      renderWorkItemCollection("Related Work Items", relatedWorkItems),
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
       renderProjectKnowledgeAuthorityNotice(input.projectKnowledgeNotice),
       renderProjectKnowledge(relevantKnowledge),
@@ -54,17 +73,24 @@ export function buildRequirementAnalysisMarkdownPrompt(input: MarkdownPromptInpu
 }
 
 export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput & { options?: Record<string, unknown> | NormalizedTestDesignOptions }) {
+  const relatedWorkItems = selectRelatedWorkItemsWithinBudget({
+    relatedWorkItems: input.relatedWorkItems ?? [],
+    floor: input.relatedWorkItemsFloor ?? DEFAULT_RELATED_ITEMS_FLOOR,
+    maxInputTokens: input.maxInputTokens,
+  });
   const relevantKnowledge = selectRelevantProjectKnowledge({
+    maxInputTokens: input.maxInputTokens,
+    rankedOverride: input.rankedKnowledgeKeys,
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
       stringifyForPromptSearch(input.targetRequirement),
-      stringifyForPromptSearch(input.relatedWorkItems ?? []),
+      stringifyForPromptSearch(relatedWorkItems),
       stringifyForPromptSearch(input.selectedContext ?? []),
       stringifyForPromptSearch(input.options ?? {}),
     ].join("\n"),
     prioritySourceIds: [
       extractWorkItemId(input.targetRequirement),
-      ...extractWorkItemIds(input.relatedWorkItems ?? []),
+      ...extractWorkItemIds(relatedWorkItems),
       ...extractWorkItemIds(input.selectedContext ?? []),
     ].filter(Boolean) as string[],
   });
@@ -73,7 +99,7 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
     prompt: [
       renderCurrentProject(input.currentProject),
       renderTargetWorkItem("User Story Under Test", input.targetRequirement),
-      renderWorkItemCollection("Related Work Items", input.relatedWorkItems ?? []),
+      renderWorkItemCollection("Related Work Items", relatedWorkItems),
       renderWorkItemCollection("Project Context", input.selectedContext ?? []),
       renderTestDesignOptions(input.options ?? {}),
       renderCoverageExpectations(),
@@ -89,17 +115,24 @@ export function buildTestCaseGenerationMarkdownPrompt(input: MarkdownPromptInput
 }
 
 export function buildExistingTestCaseReviewMarkdownPrompt(input: MarkdownPromptInput & { linkedTestCases?: unknown[] }) {
+  const relatedWorkItems = selectRelatedWorkItemsWithinBudget({
+    relatedWorkItems: input.relatedWorkItems ?? [],
+    floor: input.relatedWorkItemsFloor ?? DEFAULT_RELATED_ITEMS_FLOOR,
+    maxInputTokens: input.maxInputTokens,
+  });
   const relevantKnowledge = selectRelevantProjectKnowledge({
+    maxInputTokens: input.maxInputTokens,
+    rankedOverride: input.rankedKnowledgeKeys,
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
       stringifyForPromptSearch(input.targetRequirement),
       stringifyForPromptSearch(input.linkedTestCases ?? []),
-      stringifyForPromptSearch(input.relatedWorkItems ?? []),
+      stringifyForPromptSearch(relatedWorkItems),
       stringifyForPromptSearch(input.selectedContext ?? []),
     ].join("\n"),
     prioritySourceIds: [
       extractWorkItemId(input.targetRequirement),
-      ...extractWorkItemIds(input.relatedWorkItems ?? []),
+      ...extractWorkItemIds(relatedWorkItems),
       ...extractWorkItemIds(input.selectedContext ?? []),
     ].filter(Boolean) as string[],
   });
@@ -128,18 +161,25 @@ export function buildTestExecutionEffortMarkdownPrompt(
     options?: Record<string, unknown>;
   },
 ) {
+  const relatedWorkItems = selectRelatedWorkItemsWithinBudget({
+    relatedWorkItems: input.relatedWorkItems ?? [],
+    floor: input.relatedWorkItemsFloor ?? DEFAULT_RELATED_ITEMS_FLOOR,
+    maxInputTokens: input.maxInputTokens,
+  });
   const relevantKnowledge = selectRelevantProjectKnowledge({
+    maxInputTokens: input.maxInputTokens,
+    rankedOverride: input.rankedKnowledgeKeys,
     projectKnowledgeBase: input.projectKnowledgeBase,
     queryText: [
       stringifyForPromptSearch(input.targetRequirement),
       stringifyForPromptSearch(input.linkedTestCases ?? []),
-      stringifyForPromptSearch(input.relatedWorkItems ?? []),
+      stringifyForPromptSearch(relatedWorkItems),
       stringifyForPromptSearch(input.selectedContext ?? []),
       stringifyForPromptSearch(input.options ?? {}),
     ].join("\n"),
     prioritySourceIds: [
       extractWorkItemId(input.targetRequirement),
-      ...extractWorkItemIds(input.relatedWorkItems ?? []),
+      ...extractWorkItemIds(relatedWorkItems),
       ...extractWorkItemIds(input.selectedContext ?? []),
     ].filter(Boolean) as string[],
   });
@@ -175,13 +215,65 @@ export function extractWorkItemId(value: unknown) {
   return typeof id === "string" || typeof id === "number" ? String(id) : undefined;
 }
 
-const DOMAIN_BRIEF_LIMITS = {
-  modules: 6,
-  businessRules: 14,
-  stateTransitions: 6,
-  glossary: 14,
-  crossDependencies: 6,
+/**
+ * Floor per knowledge category, so every category is represented even on a small
+ * model. These are minimums, not caps — the token budget decides how far past them to
+ * go. They were previously hard caps (6/14/6/14/6), which on a real 213-entry project
+ * meant workflows saw 22% of the compiled knowledge regardless of the model's window:
+ * 14 of 114 business rules reached test design, and business rules ARE the test
+ * conditions.
+ */
+const DOMAIN_BRIEF_FLOORS = {
+  modules: 4,
+  businessRules: 6,
+  stateTransitions: 4,
+  glossary: 6,
+  crossDependencies: 2,
+  chatInsights: 2,
 } as const;
+
+/**
+ * Share of the model's usable window that compiled knowledge may occupy in a workflow
+ * prompt. The rest is the work item under analysis, related items, selected context,
+ * the output contract, and room for the response.
+ */
+const KNOWLEDGE_BUDGET_SHARE = 0.35;
+
+/**
+ * How many slots each knowledge category earns per round, per workflow.
+ *
+ * Uniform round-robin is only defensible while everything fits. Once the corpus
+ * outgrows the window it silently equalises categories that are not equally useful:
+ * modelled on a 2,000-entry corpus, business rules — half the corpus and the single
+ * most load-bearing category for test work — received about a fifth of the slots.
+ *
+ * The weights encode what each workflow actually reasons over:
+ * - **Test design / effort**: business rules and state transitions ARE the test
+ *   conditions. Every rule is a positive case, a negative case and usually a boundary;
+ *   every transition is a path. Glossary and modules mainly disambiguate wording.
+ * - **Requirement analysis**: contradictions and gaps surface by comparing a
+ *   requirement against existing rules, but module and dependency structure matters
+ *   more here than for test authoring, because scope and impact are the question.
+ */
+const CATEGORY_WEIGHTS = {
+  testDesign: { businessRules: 4, stateTransitions: 3, glossary: 1, modules: 1, crossDependencies: 1, chatInsights: 2 },
+  requirementAnalysis: { businessRules: 3, stateTransitions: 2, glossary: 2, modules: 2, crossDependencies: 2, chatInsights: 2 },
+} as const;
+
+export type KnowledgeWeighting = keyof typeof CATEGORY_WEIGHTS;
+/** Share available to related work items, over and above the caller's top-K floor. */
+const RELATED_ITEMS_BUDGET_SHARE = 0.25;
+/**
+ * Ceiling the floor-guaranteed portion of related items may consume, measured against
+ * the full usable window rather than the narrower share above. The floor exists so the
+ * workspace's configured top-K is not silently truncated by the 25% share; it is not a
+ * license for one oversized item (or several) to consume the whole prompt on its own.
+ */
+const RELATED_ITEMS_FLOOR_CEILING_SHARE = 0.5;
+/** Used when the caller does not supply the workspace top-K. */
+const DEFAULT_RELATED_ITEMS_FLOOR = 8;
+/** Cap on what per-category floors may consume, so they cannot overrun the share. */
+const MAX_FLOOR_SHARE_OF_BUDGET = 0.5;
 
 function renderCurrentProject(project: CurrentProjectPromptInput) {
   return [
@@ -483,6 +575,7 @@ function renderProjectKnowledge(knowledgeBase: ProjectKnowledgeBase | null) {
     renderStateTransitions(knowledgeBase),
     renderGlossary(knowledgeBase),
     renderDependencies(knowledgeBase),
+    renderChatInsights(knowledgeBase),
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -549,6 +642,26 @@ function renderGlossary(knowledgeBase: ProjectKnowledgeBase) {
     ...knowledgeBase.glossary.map((item) =>
       [
         `- ${item.term} (${item.type}): ${cleanPromptText(item.definition)}`,
+        item.sourceWorkItemIds.length ? `  - Sources: ${item.sourceWorkItemIds.join(", ")}` : undefined,
+        item.evidence ? `  - Evidence: ${cleanPromptText(item.evidence)}` : undefined,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    ),
+  ].join("\n");
+}
+
+function renderChatInsights(knowledgeBase: ProjectKnowledgeBase) {
+  // Unlike the five compiler categories, omitted entirely rather than a "none supplied"
+  // placeholder when empty: most projects will never integrate one, and a permanent
+  // empty section for a feature that is off by default is noise, not information.
+  if (!knowledgeBase.chatInsights.length) return "";
+  return [
+    "## Answers An Admin Approved From The Business Owner Assistant",
+    "These are a human-approved synthesis, not an extracted-and-verified fact re-anchored to a source quote -- weigh them accordingly.",
+    ...knowledgeBase.chatInsights.map((item) =>
+      [
+        `- ${cleanPromptText(item.content)}`,
         item.sourceWorkItemIds.length ? `  - Sources: ${item.sourceWorkItemIds.join(", ")}` : undefined,
         item.evidence ? `  - Evidence: ${cleanPromptText(item.evidence)}` : undefined,
       ]
@@ -683,52 +796,176 @@ function testStepsValue(value: unknown) {
   });
 }
 
+/**
+ * Ranks each knowledge category by relevance, then fills a token budget round-robin
+ * across categories.
+ *
+ * Round-robin rather than per-category quotas: it guarantees every category is
+ * represented (rank 1 of each before rank 2 of any), and small categories simply
+ * exhaust, handing their remaining share to the large ones. No arbitrary split to tune.
+ */
 function selectRelevantProjectKnowledge(input: {
   projectKnowledgeBase: unknown | null | undefined;
   queryText: string;
   prioritySourceIds: string[];
+  /** From the caller's configured model; falls back conservatively when unknown. */
+  maxInputTokens?: number;
+  /** Which category weighting to apply; defaults to the test-oriented profile. */
+  weighting?: KnowledgeWeighting;
+  /** Optional relevance override, ranked best-first per category (semantic ranking). */
+  rankedOverride?: Partial<Record<keyof typeof CATEGORY_WEIGHTS.testDesign, string[]>>;
 }): ProjectKnowledgeBase | null {
   const knowledgeBase = normalizeProjectKnowledge(input.projectKnowledgeBase);
   if (!knowledgeBase) return null;
 
   const queryTerms = tokenizeForPromptSearch(input.queryText);
   const prioritySourceIds = new Set(input.prioritySourceIds);
+  // Preserves TItem: rankKnowledgeItems is generic, but inference through a local
+  // alias widens to its constraint unless the parameter is re-declared here.
+  const rank = <TItem extends { sourceWorkItemIds?: string[] }>(
+    items: TItem[],
+    describe: (item: TItem) => string,
+  ): TItem[] => rankKnowledgeItems(items, queryTerms, prioritySourceIds, describe);
+
+  // The semantic override is the eligible set for its category, in relevance order —
+  // not a reordering of everything. It arrives already cut at a relevance threshold, so
+  // admitting the entries it left out would put back exactly the material the threshold
+  // exists to remove: a category with nothing to say about this work item still has a
+  // best entry, and sending it reads as though it were relevant. A category the
+  // override omits entirely keeps keyword ranking.
+  const applyOverride = <TItem extends { sourceWorkItemIds?: string[] }>(
+    items: TItem[],
+    keyOf: (item: TItem) => string,
+    eligible: string[] | undefined,
+  ): TItem[] => {
+    if (!eligible) return items;
+    const position = new Map(eligible.map((key, index) => [key, index]));
+    return items
+      .filter((item) => position.has(keyOf(item)))
+      .sort((first, second) => position.get(keyOf(first))! - position.get(keyOf(second))!);
+  };
+
+  const ranked = {
+    modules: rank(knowledgeBase.modules, (item) =>
+      [item.id, item.name, item.description, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
+    ),
+    businessRules: rank(knowledgeBase.businessRules, (item) =>
+      [item.id, item.rule, item.moduleName, item.sourceField, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
+    ),
+    stateTransitions: rank(knowledgeBase.stateTransitions, (item) =>
+      [item.id, item.workflowName, item.fromState, item.toState, item.triggerOrCondition, item.actor, item.moduleName, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
+    ),
+    glossary: rank(knowledgeBase.glossary, (item) =>
+      [item.term, item.type, item.definition, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
+    ),
+    crossDependencies: rank(knowledgeBase.crossDependencies, (item) =>
+      [item.id, item.sourceModule, item.targetModule, item.dependencyType, item.description, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
+    ),
+    // Not re-anchored to a source quote the way the compiler's own categories are (see
+    // the schema doc comment on ProjectKnowledgeChatInsightSchema), so ranked on its own
+    // content plus sources -- there is no "moduleName"/"type" field to fold in.
+    chatInsights: rank(knowledgeBase.chatInsights, (item) =>
+      [item.id, item.title, item.content, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
+    ),
+  };
+
+  const ordered = {
+    // Keys must match what the knowledge entry table stores as `entry_key`: the entry
+    // id for every category except glossary, which is keyed by term.
+    modules: applyOverride(ranked.modules, (item) => item.id, input.rankedOverride?.modules),
+    businessRules: applyOverride(ranked.businessRules, (item) => item.id, input.rankedOverride?.businessRules),
+    stateTransitions: applyOverride(ranked.stateTransitions, (item) => item.id, input.rankedOverride?.stateTransitions),
+    glossary: applyOverride(ranked.glossary, (item) => item.term, input.rankedOverride?.glossary),
+    crossDependencies: applyOverride(ranked.crossDependencies, (item) => item.id, input.rankedOverride?.crossDependencies),
+    chatInsights: applyOverride(ranked.chatInsights, (item) => item.id, input.rankedOverride?.chatInsights),
+  };
+
+  const budgetTokens = Math.floor(usableInputTokens(input.maxInputTokens) * KNOWLEDGE_BUDGET_SHARE);
+  const weights = CATEGORY_WEIGHTS[input.weighting ?? "testDesign"];
+  const taken = {
+    modules: 0, businessRules: 0, stateTransitions: 0, glossary: 0, crossDependencies: 0, chatInsights: 0,
+  } as Record<keyof typeof ranked, number>;
+  const categories = Object.keys(ranked) as Array<keyof typeof ranked>;
+
+  // Floors first, so every category is represented before weighting takes over. They
+  // are capped at a fraction of the budget: a floor that cannot be afforded must not
+  // silently overrun the share and squeeze the work item itself out of the prompt.
+  //
+  // Checked against the PROJECTED total (usedTokens + this entry's cost), not the
+  // current one: checking only the current total against the ceiling lets a single
+  // oversized entry blow straight through it once the loop has decided "one more floor
+  // item" is allowed, with no per-entry cap anywhere else to catch it. Measured: a
+  // single ~20,000-character business rule alone costs ~5,026 estimated tokens --
+  // larger than an entire 4,000-token window on its own.
+  const floorCeiling = Math.floor(budgetTokens * MAX_FLOOR_SHARE_OF_BUDGET);
+  let usedTokens = 0;
+  for (const category of categories) {
+    while (taken[category] < DOMAIN_BRIEF_FLOORS[category] && taken[category] < ordered[category].length) {
+      const cost = estimateTokens(JSON.stringify(ordered[category][taken[category]]));
+      if (usedTokens + cost > floorCeiling) break;
+      usedTokens += cost;
+      taken[category] += 1;
+    }
+  }
+
+  // Then weighted round-robin: a category with weight 4 takes four items per pass.
+  let progressed = true;
+  while (progressed) {
+    progressed = false;
+    for (const category of categories) {
+      for (let slot = 0; slot < weights[category]; slot += 1) {
+        const next = ordered[category][taken[category]];
+        if (next === undefined) break;
+        const cost = estimateTokens(JSON.stringify(next));
+        if (usedTokens + cost > budgetTokens) break;
+        taken[category] += 1;
+        usedTokens += cost;
+        progressed = true;
+      }
+    }
+  }
 
   return {
-    modules: rankKnowledgeItems(knowledgeBase.modules, queryTerms, prioritySourceIds, (item) =>
-      [item.id, item.name, item.description, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
-    ).slice(0, DOMAIN_BRIEF_LIMITS.modules),
-    businessRules: rankKnowledgeItems(knowledgeBase.businessRules, queryTerms, prioritySourceIds, (item) =>
-      [item.id, item.rule, item.moduleName, item.sourceField, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
-    ).slice(0, DOMAIN_BRIEF_LIMITS.businessRules),
-    stateTransitions: rankKnowledgeItems(knowledgeBase.stateTransitions, queryTerms, prioritySourceIds, (item) =>
-      [
-        item.id,
-        item.workflowName,
-        item.fromState,
-        item.toState,
-        item.triggerOrCondition,
-        item.actor,
-        item.moduleName,
-        item.evidence,
-        item.sourceWorkItemIds.join(" "),
-      ].join(" "),
-    ).slice(0, DOMAIN_BRIEF_LIMITS.stateTransitions),
-    glossary: rankKnowledgeItems(knowledgeBase.glossary, queryTerms, prioritySourceIds, (item) =>
-      [item.term, item.type, item.definition, item.evidence, item.sourceWorkItemIds.join(" ")].join(" "),
-    ).slice(0, DOMAIN_BRIEF_LIMITS.glossary),
-    crossDependencies: rankKnowledgeItems(knowledgeBase.crossDependencies, queryTerms, prioritySourceIds, (item) =>
-      [
-        item.id,
-        item.sourceModule,
-        item.targetModule,
-        item.dependencyType,
-        item.description,
-        item.evidence,
-        item.sourceWorkItemIds.join(" "),
-      ].join(" "),
-    ).slice(0, DOMAIN_BRIEF_LIMITS.crossDependencies),
+    modules: ordered.modules.slice(0, taken.modules),
+    businessRules: ordered.businessRules.slice(0, taken.businessRules),
+    stateTransitions: ordered.stateTransitions.slice(0, taken.stateTransitions),
+    glossary: ordered.glossary.slice(0, taken.glossary),
+    crossDependencies: ordered.crossDependencies.slice(0, taken.crossDependencies),
+    chatInsights: ordered.chatInsights.slice(0, taken.chatInsights),
   };
+}
+
+/**
+ * Trims related work items to what fits, keeping at least the caller's top-K.
+ *
+ * top-K is a deliberate user setting (Settings -> Knowledge & Context), so it is
+ * honoured as a floor rather than replaced: the budget only ever adds items the
+ * window can afford.
+ */
+function selectRelatedWorkItemsWithinBudget(input: {
+  relatedWorkItems: unknown[];
+  floor: number;
+  maxInputTokens?: number;
+}): unknown[] {
+  const budgetTokens = Math.floor(usableInputTokens(input.maxInputTokens) * RELATED_ITEMS_BUDGET_SHARE);
+  // Wider than budgetTokens deliberately: this is what the floor-guaranteed portion may
+  // spend, so the 25% share does not truncate below the workspace's configured top-K.
+  const floorCeiling = Math.floor(usableInputTokens(input.maxInputTokens) * RELATED_ITEMS_FLOOR_CEILING_SHARE);
+  const selected: unknown[] = [];
+  let usedTokens = 0;
+  for (const item of input.relatedWorkItems) {
+    const cost = estimateTokens(JSON.stringify(item));
+    // Checked against the PROJECTED total before committing, for both stages: the floor
+    // stage was previously unconditional regardless of cost, which is exactly what let a
+    // single oversized related item consume the whole prompt on its own -- despite this
+    // function's own stated intent that "the budget only ever adds items the window can
+    // afford."
+    const ceiling = selected.length < input.floor ? floorCeiling : budgetTokens;
+    if (usedTokens + cost > ceiling) break;
+    selected.push(item);
+    usedTokens += cost;
+  }
+  return selected;
 }
 
 function normalizeProjectKnowledge(value: unknown): ProjectKnowledgeBase | null {
@@ -740,6 +977,7 @@ function normalizeProjectKnowledge(value: unknown): ProjectKnowledgeBase | null 
     stateTransitions: Array.isArray(knowledgeBase.stateTransitions) ? knowledgeBase.stateTransitions : [],
     glossary: Array.isArray(knowledgeBase.glossary) ? knowledgeBase.glossary : [],
     crossDependencies: Array.isArray(knowledgeBase.crossDependencies) ? knowledgeBase.crossDependencies : [],
+    chatInsights: Array.isArray(knowledgeBase.chatInsights) ? knowledgeBase.chatInsights : [],
   };
 }
 
@@ -755,7 +993,12 @@ function rankKnowledgeItems<TItem extends { sourceWorkItemIds?: string[] }>(
       index,
       score: scoreKnowledgeItem(item, queryTerms, prioritySourceIds, textForItem(item)),
     }))
-    .filter((entry) => entry.score > 0 || entry.index < 3)
+    // Ranking orders; it must not exclude. Entries that share no term with the work
+    // item used to be dropped here unless they were in the first three, which capped
+    // modules and dependencies at three on any model — a hard filter applied before the
+    // token budget, and before semantic ranking could speak for an entry that keyword
+    // overlap cannot see. Zero-scoring entries now sort last instead, so a small window
+    // still never reaches them and a large one can.
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .map((entry) => entry.item);
 }
