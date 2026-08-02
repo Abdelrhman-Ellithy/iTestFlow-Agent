@@ -21,6 +21,18 @@ import { estimateTokens } from "./evidence-budget";
  * immediately preceding turns ("what about the rejected one?" means nothing without
  * them), so recency is not negotiable — relevance selection only governs what happens
  * *behind* this window.
+ *
+ * Deliberately not gated against budgetTokens either: these 3 exchanges are added
+ * unconditionally below, before the older/relevance loop even starts. Gating them
+ * would mean dropping one on a small model — exactly the follow-up-breaking failure
+ * this constant exists to prevent. The real ceiling against the model's actual window
+ * is enforced one layer up, in selectEvidenceWithinBudget (evidence-budget.ts): it
+ * measures the *actual* size of whatever history this function selected as part of
+ * the prompt's fixed cost, and shrinks evidence to compensate, down to a documented
+ * floor rather than a silent overflow (see evidence-budget.test.ts, "charges the fixed
+ * prompt cost against the evidence budget"). A per-message clamp
+ * (CONTEXT_CHATBOT_HISTORY_CONTENT_LIMIT) also bounds how large any one exchange can
+ * realistically get.
  */
 export const RECENT_EXCHANGES_ALWAYS_KEPT = 3;
 
