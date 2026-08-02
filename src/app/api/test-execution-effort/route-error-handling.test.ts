@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   startWorkflowRun: vi.fn(),
   failWorkflowRun: vi.fn(),
   completeWorkflowRun: vi.fn(),
+  writeGenerationFailureAudit: vi.fn(),
 }));
 
 vi.mock("@/modules/credentials/scoped-resolution.service", async (importOriginal) => {
@@ -41,6 +42,9 @@ vi.mock("@/modules/test-execution-effort/test-execution-effort.data-loader", () 
 }));
 vi.mock("@/modules/workspace/workspace-settings.service", () => ({
   getWorkspaceSettings: mocks.getWorkspaceSettings,
+}));
+vi.mock("@/modules/audit/generation-failure-audit", () => ({
+  writeGenerationFailureAudit: mocks.writeGenerationFailureAudit,
 }));
 vi.mock("@/modules/test-execution-effort/test-execution-effort.service", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/modules/test-execution-effort/test-execution-effort.service")>();
@@ -119,7 +123,10 @@ describe("test-execution-effort route integration errors", () => {
 
   it("records a failure audit for generate even on an AppError", async () => {
     // The audit write sits before the AppError/non-AppError branch, so it needed a case
-    // that actually exercises that branch to prove it still runs on both paths.
+    // that actually exercises that branch to prove it still runs on both paths. This
+    // previously only ran generatePost and asserted failWorkflowRun, never actually
+    // mocking or checking writeGenerationFailureAudit itself -- so a regression that
+    // silently dropped the audit write would have passed unnoticed.
     mocks.loadTestExecutionEffortData.mockRejectedValue(new AppError({
       code: AppErrorCode.KnowledgeDraftConflict,
       message: "conflict",
@@ -131,6 +138,10 @@ describe("test-execution-effort route integration errors", () => {
     expect(response.status).toBeGreaterThanOrEqual(400);
     expect(response.status).toBeLessThan(500);
     expect(mocks.failWorkflowRun).toHaveBeenCalled();
+    expect(mocks.writeGenerationFailureAudit).toHaveBeenCalledWith(expect.objectContaining({
+      scope: trustedScope,
+      action: "test_execution_effort.run",
+    }));
   });
 
   it("maps a non-AppError failure through the safe-error fallback, distinct from AppError handling", async () => {
@@ -142,6 +153,10 @@ describe("test-execution-effort route integration errors", () => {
 
     expect(response.status).toBeGreaterThanOrEqual(500);
     expect(mocks.failWorkflowRun).toHaveBeenCalled();
+    expect(mocks.writeGenerationFailureAudit).toHaveBeenCalledWith(expect.objectContaining({
+      scope: trustedScope,
+      action: "test_execution_effort.run",
+    }));
   });
 });
 
