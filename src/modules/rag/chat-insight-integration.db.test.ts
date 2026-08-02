@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, expect, it } from "vitest";
 
-import { flushBackgroundWrites, resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
+import { flushBackgroundWrites, getPool, resetDatabaseForTests, sqlRun } from "@/modules/shared/infrastructure/database/db";
 import {
   refreshProjectKnowledgeSearchIndex,
   retrieveContextChatbotEvidence,
@@ -219,6 +219,53 @@ describeDb("saved chatbot answers reach retrieval (DB-backed)", () => {
       embeddingProvider: null, rerankProvider: null,
     });
     expect(after.knowledge.map((item) => item.content)).not.toContain(answer);
+  });
+
+  it("a reject that races a concurrent integrate still deindexes, even though the integrate commits first", async () => {
+    // Reproduces the exact race the fix closes. rejectProjectKnowledgeCandidate used to
+    // decide whether to deindex using a status read *before* its own transaction started.
+    // If a concurrent integrate committed in the window between that read and this
+    // function's own update, the read was stale: rejection flipped the status but the
+    // insight it should have pulled stayed fully answerable. Holding the row lock
+    // ourselves and queuing integrate then reject behind it forces exactly that
+    // interleaving -- integrate commits first, reject's own read of the row must happen
+    // only after that commit, not before it -- deterministically instead of by luck.
+    const answer = "Refund holds beyond thirty days require a director's written sign-off.";
+    const candidate = await savedAnswer(answer);
+
+    const lockClient = await getPool().connect();
+    try {
+      await lockClient.query("BEGIN");
+      await lockClient.query(
+        "SELECT id FROM project_knowledge_candidates WHERE id = $1 FOR UPDATE",
+        [candidate.candidateId],
+      );
+
+      const integratePromise = integrateProjectKnowledgeCandidate({
+        scope, candidateId: candidate.candidateId, actor: "admin-1",
+      });
+      // Give integrate's own update time to reach Postgres and join the lock wait queue
+      // before reject's does, so release below grants the lock to integrate first.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const rejectPromise = rejectProjectKnowledgeCandidate({
+        scope, candidateId: candidate.candidateId, actor: "admin-2", reason: "changed my mind",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      await lockClient.query("COMMIT");
+
+      const [integrateResult, rejectResult] = await Promise.allSettled([integratePromise, rejectPromise]);
+      expect(integrateResult.status).toBe("fulfilled");
+      expect(rejectResult.status).toBe("fulfilled");
+    } finally {
+      lockClient.release();
+    }
+
+    const evidence = await retrieveContextChatbotEvidence({
+      scope, query: "refund holds thirty days director sign-off",
+      embeddingProvider: null, rerankProvider: null,
+    });
+    expect(evidence.knowledge.map((item) => item.content)).not.toContain(answer);
   });
 
   it("rejecting one duplicate does not un-publish an identical still-integrated insight", async () => {

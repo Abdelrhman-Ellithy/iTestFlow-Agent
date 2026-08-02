@@ -1173,19 +1173,31 @@ export async function rejectProjectKnowledgeCandidate(input: {
 }) {
   const scope = assertProjectScope(input.scope);
   const now = nowIso();
-  const before = await getProjectKnowledgeCandidate({ scope, candidateId: input.candidateId });
   let updated = 0;
   // Status and index move together: rejecting an integrated insight has to stop it being
   // answerable, or an admin's rejection is cosmetic while the content keeps appearing in
-  // answers indefinitely.
+  // answers indefinitely. The pre-update status has to come from a row lock taken inside
+  // this same transaction, not a read before it started — a read taken earlier can go
+  // stale if a concurrent integrate commits in between, which would make this function
+  // decide whether to deindex based on a status that was already overtaken.
   await withTransaction(async (client) => {
+    const current = await sqlGet<{ status: ProjectKnowledgeCandidateStatus; content: string }>(
+      `
+        SELECT status, content FROM project_knowledge_candidates
+        WHERE id = @candidateId AND project_id = @projectId AND azure_project_id = @azureProjectId
+        FOR UPDATE
+      `,
+      { candidateId: input.candidateId, projectId: scope.projectId, azureProjectId: scope.azureProjectId },
+      client,
+    );
+    if (!current || current.status === "rejected") return;
+
     updated = await sqlRun(
       `
         UPDATE project_knowledge_candidates
         SET status = 'rejected', rejected_by = @actor, rejected_reason = @reason,
             rejected_at = @now, updated_at = @now
         WHERE id = @candidateId AND project_id = @projectId AND azure_project_id = @azureProjectId
-          AND status <> 'rejected'
       `,
       {
         candidateId: input.candidateId,
@@ -1197,11 +1209,11 @@ export async function rejectProjectKnowledgeCandidate(input: {
       },
       client,
     );
-    if (!updated || before?.status !== "integrated") return;
+    if (!updated || current.status !== "integrated") return;
 
     // Entries are keyed by content, so another integrated candidate may still legitimately
     // claim this exact answer. Un-publishing then would revoke a decision nobody reversed.
-    const entryKey = chatInsightEntryKey(before.content);
+    const entryKey = chatInsightEntryKey(current.content);
     const siblings = await sqlAll<{ content: string }>(
       `
         SELECT content FROM project_knowledge_candidates
